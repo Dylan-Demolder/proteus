@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Weather Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>⛅ Weather Dashboard</h1>
+    <p class="subtitle">Real-time conditions from around the world</p>
+  </header>
+
+  <section class="controls">
+    <div class="input-group">
+      <input type="text" id="cityInput" placeholder="Enter city name..." value="London" />
+      <button id="getWeatherBtn">Get Weather</button>
+    </div>
+    <div class="presets">
+      <button class="preset" data-city="Tokyo">Tokyo</button>
+      <button class="preset" data-city="New York">New York</button>
+      <button class="preset" data-city="Paris">Paris</button>
+      <button class="preset" data-city="Sydney">Sydney</button>
+      <button class="preset" data-city="Dubai">Dubai</button>
+      <button class="preset" data-city="Reykjavik">Reykjavik</button>
+    </div>
+  </section>
+
+  <section id="loading" class="hidden">
+    <div class="spinner"></div>
+    <p>Fetching weather data...</p>
+  </section>
+
+  <section id="error" class="hidden">
+    <div class="error-box">
+      <span class="error-icon">⚠️</span>
+      <p id="errorMessage">Something went wrong</p>
+    </div>
+  </section>
+
+  <section id="weatherResult" class="hidden">
+    <div class="weather-card">
+      <div class="weather-header">
+        <h2 id="cityName">--</h2>
+        <span id="countryFlag" class="flag"></span>
+      </div>
+      <div class="weather-main">
+        <div class="temp-section">
+          <span id="temperature" class="temperature">--°C</span>
+          <span id="feelsLike" class="feels-like">Feels like --°C</span>
+        </div>
+        <div class="condition-section">
+          <span id="weatherDesc" class="condition">--</span>
+          <span id="windInfo" class="wind">Wind: --</span>
+        </div>
+      </div>
+      <div class="weather-details">
+        <div class="detail">
+          <span class="detail-label">Humidity</span>
+          <span id="humidity" class="detail-value">--%</span>
+        </div>
+        <div class="detail">
+          <span class="detail-label">Visibility</span>
+          <span id="visibility" class="detail-value">-- km</span>
+        </div>
+        <div class="detail">
+          <span class="detail-label">UV Index</span>
+          <span id="uvIndex" class="detail-value">--</span>
+        </div>
+        <div class="detail">
+          <span class="detail-label">Pressure</span>
+          <span id="pressure" class="detail-value">-- hPa</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="history">
+    <h3>Recent Searches</h3>
+    <ul id="historyList"></ul>
+  </section>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

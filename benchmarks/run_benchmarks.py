@@ -91,9 +91,13 @@ def main():
     long_text = "The quick brown fox jumps over the lazy dog. " * 2000
     benchmark_file("Long text (36K chars)", long_text)
 
-    # 8. Cache files (real data from dashboard if available)
+    # 8. Cache files (real data from dashboard if available) — skip in CI
     cache_dir = Path("/root/dashboard/cache")
-    if cache_dir.exists():
+    try:
+        cache_available = cache_dir.is_dir()
+    except PermissionError:
+        cache_available = False
+    if cache_available:
         for f in sorted(cache_dir.glob("*.json"))[:5]:
             try:
                 content = f.read_text()
