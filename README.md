@@ -62,15 +62,20 @@ proteus clear                     # Clear the cache
 
 A real HTML/CSS/JS weather app that fetches live data from wttr.in — served as an end-to-end compression demo.
 
-**Real-world test on 9 files + live API response (300KB → 111KB, 63%):**
+**Real-world test on 9 files (300KB → 111KB, 63%):**
 
 | File | Type | Size | Saved |
 |---|---|---|---|
-| `app.js` | code_javascript | 5.1KB → 4.7KB | 8.4% |
-| `weather-api-response.json` | json | 38.7KB → 23.1KB | 40.3% |
-| `LIVE-wttr.in-Tokyo.json` | json | 38.7KB → 23.1KB | 40.2% |
 | `combined-project.txt` | text | 130.9KB → **4.6KB** | **96.5%** |
-| **Total** | | **300KB → 111KB** | **63.0%** |
+| `weather-api-response.json` | json | 38.7KB → 23.1KB | 40.3% |
+| `weather-api-reykjavik.json` | json | 38.8KB → 23.2KB | 40.1% |
+| `weather-api-tokyo.json` | json | 38.7KB → 23.1KB | 40.2% |
+| `LIVE-wttr.in-Tokyo.json` | json | 38.7KB → 23.1KB | 40.2% |
+| `app.js` | code_javascript | 5.1KB → 4.6KB | 10.9% |
+| `index.html` | text | 2.8KB → 2.8KB | — |
+| `styles.css` | text | 4.2KB → 4.2KB | — |
+| `build-output.log` | logs | 2.2KB → 2.2KB | — |
+| **Total (9 files)** | | **300KB → 111KB** | **63.0%** |
 
 **Verification:**
 - ✅ All 9 files: byte-for-byte match after CCR roundtrip
@@ -84,14 +89,15 @@ The combined-project.txt shows the killer use case: an LLM seeing `cat` output o
 
 A multi-service log analysis pipeline demonstrating Proteus on server output.
 
-**8 files, 256KB → 79KB (69%):**
+**5 files, 256KB → 79KB (69%):**
 
 | File | Size | Saved | Compressor |
 |---|---|---|---|
 | combined.log (3 services, 800 entries) | 84.6KB → 21.2KB | 74.9% | log_deduper |
 | nginx.log (500 lines) | 55.2KB → 1.9KB | **96.5%** | search |
+| metadata.json (800 records) | 87.5KB → 28.2KB | 67.8% | json_crusher |
+| db.log (100 lines) | 9.7KB → 8.3KB | 14.3% | log_deduper |
 | app.log (200 lines) | 19.7KB → 19.6KB | 0.6% | log_deduper |
-| metadata.json | 87.5KB → 28.2KB | 67.8% | json_crusher |
 
 **Verification:** All 70 analysis metrics (IP counts, status codes, error rates, timing, durations) identical across 5 files after roundtrip — 14 metrics × 5 files, zero failures.
 
@@ -114,32 +120,32 @@ Key fixes driving improvement:
 
 | Compressor | Tests | Avg Savings | Best | Worst | Latency |
 |---|---|---|---|---|---|
-| json_crusher | 8 | 67.4% | 99.2% | 50.1% | 1.6ms |
 | search | 16 | 92.4% | 99.7% | 0.0% | 5.4ms |
+| json_crusher | 8 | 67.4% | 99.2% | 50.1% | 1.6ms |
+| log_deduper | 9 | ~89% | 99.8% | 0.0% | 2.5ms |
 | code | 6 | 20.9% | 48.9% | 10.3% | 1.0ms |
 | diff | 6 | 21.7% | 38.2% | 0.0% | 0.9ms |
-| log_deduper | 9 | ~89% | 99.8% | 0.0% | 2.5ms |
 | text | 7 | 0-94% | 93.9% | 0.0% | 0.4ms |
 
 **Average across all compressors: 68.1% savings at 1.6ms latency, 100% reversible.**
 
-Link: `python test/benchmark_all.py`
+Run fresh: `python test/benchmark_all.py`
 
 ## Compressors
 
 | Type | Compressor | Savings | Quality |
 |---|---|---|---|
-| JSON arrays | SmartCrusher | 60-99% | 0% (columnar / large-string CCR) |
-| JSON arrays (200+ rows) | SmartCrusher | 90%+ | <5% (row-drop) |
-| Single large JSON object | JSON Crusher | ~99% | 0% (CCR field hashing) |
-| Repetitive logs | LogDeduper | 60-99% | 0% |
-| Timestamp-varying logs | LogDeduper | ~98% | 0% (timestamp normalization) |
-| Source code | CodeCompressor | 20-50% | 0% |
-| File listings | FileLister | 40-50% | 0% |
-| Search results (grep) | SearchCompressor | 50-98% | 0% |
-| Git diffs | DiffCompressor | 20-40% | 0% |
-| Long text (>10K) | TextSummarizer | 60-94% | <5% |
-| ripgrep context output | SearchCompressor | 80%+ | 0% |
+| JSON arrays | json_crusher | 60-99% | 0% (columnar / large-string CCR) |
+| JSON arrays (200+ rows) | json_crusher | 90%+ | <5% (row-drop) |
+| Single large JSON object | json_crusher | ~99% | 0% (CCR field hashing) |
+| Repetitive logs | log_deduper | 60-99% | 0% |
+| Timestamp-varying logs | log_deduper | ~98% | 0% (timestamp normalization) |
+| Source code | code | 20-50% | 0% |
+| File listings | file_listing | 40-50% | 0% |
+| Search results (grep) | search | 50-98% | 0% |
+| Git diffs | diff | 20-40% | 0% |
+| Long text (>10K) | text | 60-94% | <5% |
+| ripgrep context output | search | 80%+ | 0% |
 
 ## How it works
 
