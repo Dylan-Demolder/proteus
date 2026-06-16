@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, os.path.expanduser("~/.hermes"))
+sys.path.insert(0, os.path.expanduser("~/.hermes/proteus/src"))
 
 from proteus import compress_tool_output, compress_summary_line
 from proteus.ccr import stats as ccr_stats
