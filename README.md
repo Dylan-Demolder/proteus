@@ -20,8 +20,10 @@ Tool output (terminal, file read, search results)
 ## Quick start
 
 ```bash
-pip install proteus
+pip install git+https://github.com/Dylan-Demolder/proteus.git
 ```
+
+> **Note:** The name `proteus` is taken on PyPI by an unrelated project. Install directly from GitHub.
 
 ### Proxy mode (transparent, no code changes)
 
@@ -70,8 +72,8 @@ A real HTML/CSS/JS weather app that fetches live data from wttr.in — served as
 | `weather-api-response.json` | json | 38.7KB → 23.1KB | 40.3% |
 | `weather-api-reykjavik.json` | json | 38.8KB → 23.2KB | 40.1% |
 | `weather-api-tokyo.json` | json | 38.7KB → 23.1KB | 40.2% |
-| `LIVE-wttr.in-Tokyo.json` | json | 38.7KB → 23.1KB | 40.2% |
-| `app.js` | code_javascript | 5.1KB → 4.6KB | 10.9% |
+| `LIVE-wttr.in-Tokyo.json` | json | ~38.6KB → 23.1KB | ~40.3% |
+| `app.js` | code_javascript | 5.1KB → 4.7KB | 8.4% |
 | `index.html` | text | 2.8KB → 2.8KB | — |
 | `styles.css` | text | 4.2KB → 4.2KB | — |
 | `build-output.log` | logs | 2.2KB → 2.2KB | — |
@@ -81,9 +83,11 @@ A real HTML/CSS/JS weather app that fetches live data from wttr.in — served as
 - ✅ All 9 files: byte-for-byte match after CCR roundtrip
 - ✅ All 7 weather fields identical on 4 API responses (temp, humidity, pressure, UV, wind direction/speed)
 - ✅ Live API fetch from wttr.in compressed and decompressed successfully
-- ✅ Cost savings: $0.15 → $0.06 per run • **$3,530/year at 100 runs/day**
+- ✅ Cost savings: $0.15 → $0.06 per run • **$3,530/year at 100 runs/day** (based on $2/M input tokens)
 
 The combined-project.txt shows the killer use case: an LLM seeing `cat` output of a whole project goes from 131KB (33K tokens) → 4.6KB (1.1K tokens) — identical information, 96% less context cost.
+
+> **Note:** The LIVE API response varies slightly between runs since it fetches real-time weather data. Numbers shown are representative.
 
 ### 📊 Log Analyzer (demos/log-analyzer)
 
@@ -108,7 +112,7 @@ A multi-service log analysis pipeline demonstrating Proteus on server output.
 ```
                  ──────────── Before ───── After ─────  Δ ────
 Overall savings     50.5%        68.1%    +17.6pp
-Latency             2.5ms         1.6ms    -0.9ms
+Latency             2.5ms         ~2.5ms   —
 
 Key fixes driving improvement:
   Log timestamp regex (space handling)       0.0% → 98.1%
@@ -118,18 +122,21 @@ Key fixes driving improvement:
 
 ### Per-compressor breakdown (48 tests, 7 compressor categories)
 
-| Compressor | Tests | Avg Savings | Best | Worst | Latency |
-|---|---|---|---|---|---|
-| search | 16 | 92.4% | 99.7% | 0.0% | 5.4ms |
-| json_crusher | 8 | 67.4% | 99.2% | 50.1% | 1.6ms |
-| log_deduper | 9 | ~89% | 99.8% | 0.0% | 2.5ms |
-| code | 6 | 20.9% | 48.9% | 10.3% | 1.0ms |
-| diff | 6 | 21.7% | 38.2% | 0.0% | 0.9ms |
-| text | 7 | 0-94% | 93.9% | 0.0% | 0.4ms |
+| Compressor | Tests | Avg Savings | Best | Worst |
+|---|---|---|---|---|
+| search | 16 | 92.4% | 99.7% | 0.0% |
+| json_crusher | 8 | 67.4% | 99.2% | 50.1% |
+| log_deduper | 1 | 0.0%* | — | — |
+| code | 6 | 20.9% | 48.9% | 10.3% |
+| diff | 6 | 21.7% | 38.2% | 0.0% |
+| text | 7 | 0.0%** | 93.9% | 0.0% |
 
-**Average across all compressors: 68.1% savings at 1.6ms latency, 100% reversible.**
+*\* Repetitive log patterns are routed through the search compressor (16 tests, 92.4%). log_deduper handles multi-line block dedup only.*
+*\*\* Text compression triggers at >10K chars. Small prose/table/YAML blocks pass through. Large text (>10K) achieves ~94%.*
 
-Run fresh: `python test/benchmark_all.py`
+**Average across all compressors: 68.1% savings at ~2.5ms latency, 100% reversible.**
+
+Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
 
 ## Compressors
 
@@ -138,8 +145,9 @@ Run fresh: `python test/benchmark_all.py`
 | JSON arrays | json_crusher | 60-99% | 0% (columnar / large-string CCR) |
 | JSON arrays (200+ rows) | json_crusher | 90%+ | <5% (row-drop) |
 | Single large JSON object | json_crusher | ~99% | 0% (CCR field hashing) |
-| Repetitive logs | log_deduper | 60-99% | 0% |
-| Timestamp-varying logs | log_deduper | ~98% | 0% (timestamp normalization) |
+| Repetitive logs | search (routed) | 60-99% | 0% |
+| Timestamp-varying logs | search (routed) | ~98% | 0% (timestamp normalization) |
+| Multi-line log blocks | log_deduper | varies | 0% |
 | Source code | code | 20-50% | 0% |
 | File listings | file_listing | 40-50% | 0% |
 | Search results (grep) | search | 50-98% | 0% |
@@ -164,7 +172,8 @@ All compression is **reversible** — originals are never lost.
 - **LLM → CCR bridge**: Compressed output includes a `[proteus_retrieve:<hash>]` marker. The LLM can call `proteus_retrieve(hash=...)` to restore any piece of original data on demand.
 - **Multi-turn history compression** (`history.py`): When a conversation exceeds threshold, old turns are compressed and originals stored in CCR — keeps the active window small without losing information.
 - **Per-session profiles** (`profiles.py`): Conservative (lossless), Balanced (default, <5% quality loss), Aggressive (max savings). `apply_profile()` merges into any config.
-- **Dashboard page** (`/proteus`): Real-time cache stats, per-compressor breakdown, profile selector.
+- **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
+- **Dashboard integration**: When used with the Hermes dashboard (localhost:8080), a `/proteus` page shows cache stats, per-compressor breakdown, and profile selector.
 
 ## Why not HeadRoom?
 
@@ -175,7 +184,7 @@ HeadRoom (the upstream project) is excellent but built for Anthropic's API. Prot
 - **Deterministic only** — no ML compressors on the hot path
 - **Multi-turn compression** — compresses accumulated history, not just live output
 - **3 compression profiles** — conservative (lossless), balanced (default), aggressive (max savings)
-- **Live dashboard** — `/proteus` page showing cache stats, per-compressor breakdown
+- **Proxy server** — works with any OpenAI-compatible agent without code changes
 - **~90% less code** — same core value, dramatically simpler
 
 ## Requirements
@@ -187,14 +196,20 @@ HeadRoom (the upstream project) is excellent but built for Anthropic's API. Prot
 ## Tests
 
 ```bash
+git clone https://github.com/Dylan-Demolder/proteus.git
+cd proteus
 pip install -e ".[dev]"
 
-cd test && python run_all.py        # All 428 tests
-python run_all.py -v                # Verbose mode
-python benchmark_all.py             # 48-scenario benchmarks
+# Run all test suites (428 tests):
+for f in test/*.py; do python "$f"; done
+
+# Run benchmarks:
+python test/benchmark_all.py
 ```
 
-Coverage: **88%** across 8 test suites (CCR, CLI, compressors, proxy, history, profiles, integration).
+Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests — **428 total**.
+
+Coverage: **88%** across 8 test suites.
 
 ## Project structure
 
@@ -225,18 +240,18 @@ proteus/
 ## Running the demos
 
 ```bash
-# Weather Dashboard
+# Weather Dashboard — compress + verify + cost report
 cd demos/weather-dashboard
-python run_proteus_test.py     # Compress + verify + cost report
+python run_proteus_test.py
 
-# Log Analyzer
+# Log Analyzer — generate, compress, verify, analyze
 cd demos/log-analyzer
-python run_demo.py             # Generate, compress, verify, analyze
+python run_demo.py
 ```
 
 ## License
 
-Apache 2.0 — same as upstream HeadRoom.
+Apache 2.0.
 
 ## Status
 
