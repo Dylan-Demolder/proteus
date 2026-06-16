@@ -22,4 +22,4 @@ config.local.yaml
 *.compressed
 
 # Pip
-*.whl
+*.whl.coverage
