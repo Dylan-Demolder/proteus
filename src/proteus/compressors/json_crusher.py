@@ -4,6 +4,10 @@ Three modes applied in sequence:
 1. Canonicalize: pretty-print → compact (lossless, always applied)
 2. Columnar: array-of-dicts with shared keys → CSV-like format (lossless, for large arrays)
 3. Row-drop: keep head/tail, drop middle with stats (lossy, for very large arrays >200 rows)
+
+For single objects, large string values (>1000 chars) are CCR-hashed and replaced
+with a reversible marker: [CCR_string:<hash>]. The original text is stored in the
+CCR cache and retrievable via proteus_retrieve.
 """
 
 import json
@@ -11,6 +15,9 @@ import hashlib
 from collections import Counter
 
 from .. import config
+
+# Large-string threshold — values above this get CCR-hashed
+LARGE_STRING_MIN_CHARS = 1000
 
 
 def canonicalize(obj) -> str:
@@ -66,6 +73,39 @@ def _columnar_format(rows: list[dict], keys: set[str]) -> str:
     return "COLUMNS\n" + "\n".join(lines)
 
 
+def _compress_large_strings(obj, stats: dict) -> object:
+    """Recursively find and CCR-hash large string values in a JSON object.
+
+    Args:
+        obj: Parsed JSON (dict, list, or scalar).
+        stats: Stats dict to populate with ccr_fields.
+
+    Returns:
+        Modified object with large strings replaced by [CCR_string:<hash>] markers.
+    """
+    if isinstance(obj, dict):
+        return {k: _compress_large_strings(v, stats) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_compress_large_strings(item, stats) for item in obj]
+    elif isinstance(obj, str) and len(obj) >= LARGE_STRING_MIN_CHARS:
+        # Hash the string, store in CCR, replace with marker
+        from ..ccr import store
+        content_hash = store(
+            original=obj,
+            compressed=f"[CCR_string:{hashlib.sha256(obj.encode()).hexdigest()[:12]}]",
+            content_type="json_string",
+            stats={"original_lines": obj.count(chr(10)) + 1},
+        )
+        marker = f"[CCR_string:{content_hash}]"
+        stats["ccr_fields"].append({
+            "hash": content_hash,
+            "original_chars": len(obj),
+            "compressed_chars": len(marker),
+        })
+        return marker
+    return obj
+
+
 def crush_json(content: str) -> tuple[str, dict]:
     """Crush large JSON output.
 
@@ -84,9 +124,13 @@ def crush_json(content: str) -> tuple[str, dict]:
 
     if isinstance(parsed, dict):
         # Single object — compact it
-        compact = canonicalize(parsed)
+        # First, check for large string values to CCR-hash
+        stats["ccr_fields"] = []
+        compressed_obj = _compress_large_strings(parsed, stats)
+        compact = canonicalize(compressed_obj)
         stats["mode"] = "compact_object"
         stats["compressed_chars"] = len(compact)
+        stats["fields_compressed"] = len(stats["ccr_fields"])
         return compact, stats
 
     if not isinstance(parsed, list):

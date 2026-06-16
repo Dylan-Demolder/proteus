@@ -45,7 +45,8 @@ _CODE_PATTERNS: dict[ContentType, list[re.Pattern]] = {
     ],
 }
 
-_SEARCH_RESULT = re.compile(r"^[^\s:]+:\d+:")
+_SEARCH_RESULT = re.compile(r"^[^\s:]+:(\d+:|\s)")
+_SEARCH_CONTEXT = re.compile(r"^[^\s:]+-\d+-")
 _DIFF_HEADER = re.compile(
     r"^(diff --git |diff --combined |diff --cc |--- a/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@)"
 )
@@ -100,10 +101,10 @@ def detect_content_type(content: str) -> ContentType:
                 if pattern.search(line):
                     hit_counts[ctype] = hit_counts.get(ctype, 0) + 1
 
-    # Check for search results (file:line: format)
+    # Check for search results (file:line: format, rg context, or file: text)
     search_hits = 0
     for line in first_lines[:20]:
-        if _SEARCH_RESULT.match(line):
+        if _SEARCH_RESULT.match(line) or _SEARCH_CONTEXT.match(line):
             search_hits += 1
     if search_hits >= 3:
         hit_counts[ContentType.SEARCH_RESULTS] = search_hits

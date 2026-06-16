@@ -22,8 +22,8 @@ _STACK_TRACE_LINES = re.compile(
 )
 _ERROR_PREFIX = re.compile(r"(ERROR|FATAL|CRITICAL|FAILED|Error:|FATAL:)", re.IGNORECASE)
 _WARN_PREFIX = re.compile(r"(WARN|WARNING)", re.IGNORECASE)
-_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T?\d{2}:\d{2}(:\d{2})?")
-_PATH_LIKE = re.compile(r"/[\w./-]+/")
+_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ]?\d{2}:\d{2}(:\d{2}([.,]\d+)?)?")
+_PATH_LIKE = re.compile(r"/[\w./-]+(?:\s|:|$)")
 
 
 def _normalize_for_dedup(line: str) -> str:
@@ -146,8 +146,76 @@ def dedup_logs(content: str) -> tuple[str, dict]:
 
     compressed = "\n".join(output_lines)
 
+    # If output still large, try block-level dedup (multi-line log entries)
+    if len(output_lines) > config.LOG_MAX_LINES_TOTAL * 2:
+        block_compressed = _dedup_blocks(output_lines)
+        if len(block_compressed) < len(compressed):
+            output_lines = block_compressed
+            compressed = "\n".join(output_lines)
+            stats["block_dedup_applied"] = True
+
     stats["compressed_lines"] = len(output_lines)
     stats["repetitions_saved"] = total_repetitions_saved
     stats["compressed_chars"] = len(compressed)
 
     return compressed, stats
+
+
+def _dedup_blocks(lines: list[str]) -> list[str]:
+    """Dedup repeating multi-line blocks (e.g., repeated multi-line log entries).
+
+    Groups consecutive non-empty lines by their first line's normalized form.
+    If a block repeats >= 3 times, replaces with a single occurrence + count.
+    """
+    from collections import Counter
+    output: list[str] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        # Find block boundaries (groups separated by blank lines or stack traces)
+        block: list[str] = [lines[i]]
+        j = i + 1
+        while j < n and lines[j].strip() and not _STACK_TRACE_LINES.match(lines[j]):
+            block.append(lines[j])
+            j += 1
+
+        if len(block) <= 1:
+            output.append(lines[i])
+            i += 1
+            continue
+
+        # Check if this block repeats
+        block_key = tuple(_normalize_for_dedup(l) for l in block)
+        count = 1
+        k = j
+        while k < n:
+            next_block = []
+            for offset in range(len(block)):
+                if k + offset < n and lines[k + offset].strip():
+                    next_block.append(lines[k + offset])
+                else:
+                    break
+            if len(next_block) == len(block):
+                next_key = tuple(_normalize_for_dedup(l) for l in next_block)
+                if next_key == block_key:
+                    count += 1
+                    k += len(block)
+                    # Skip blank lines between blocks
+                    while k < n and not lines[k].strip():
+                        k += 1
+                else:
+                    break
+            else:
+                break
+
+        if count >= 3:
+            output.append(f"[x{count}] {lines[i]}")
+            for l in block[1:]:
+                output.append(f" .  {l}")
+            i = k
+        else:
+            output.extend(block)
+            i = j
+
+    return output

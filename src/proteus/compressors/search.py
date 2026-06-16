@@ -16,7 +16,9 @@ from collections import defaultdict
 from .. import config
 
 # ── Search result patterns ──
-_SEARCH_LINE = re.compile(r"^([^:]+):(\d+):(.+)$")
+_SEARCH_LINE = re.compile(r"^([^:]+):(\d+):(.+)$")  # file:line:content
+_SEARCH_CONTEXT = re.compile(r"^([^:]+)-(\d+)-(.+)$")  # file-line-content (rg context)
+_SEARCH_BINARY = re.compile(r"^([^:]+):\s*(.+)$")  # file: content (binary / header)
 _SEARCH_SEP = re.compile(r"^--$")  # ripgrep file separator
 
 # ── Importance keywords ──
@@ -78,7 +80,27 @@ def compress_search(
             current_file = fpath
             score = _score_match(match_text)
             file_matches[current_file].append((lnum, match_text, score))
-        elif line.strip() and line.startswith("   ") or line.startswith("\t"):
+            continue
+
+        # Try rg context-line format: file-N-content
+        m = _SEARCH_CONTEXT.match(line)
+        if m:
+            fpath, lnum, match_text = m.group(1), int(m.group(2)), m.group(3)
+            current_file = fpath
+            score = _score_match(match_text) * 0.3  # Context lines: lower priority
+            file_matches[current_file].append((lnum, match_text, score))
+            continue
+
+        # Try binary/header format: file: text
+        m = _SEARCH_BINARY.match(line)
+        if m and not m.group(1).endswith(".") and len(m.group(1)) > 2:
+            fpath, match_text = m.group(1), m.group(2)
+            current_file = fpath
+            score = _score_match(match_text)
+            file_matches[current_file].append((0, match_text, score))
+            continue
+
+        if line.strip() and line.startswith("   ") or line.startswith("\t"):
             # Context line
             if file_matches[current_file]:
                 last = file_matches[current_file][-1]
