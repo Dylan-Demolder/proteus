@@ -92,7 +92,7 @@ def main():
     benchmark_file("Long text (36K chars)", long_text)
 
     # 8. Cache files (real data from dashboard if available) — skip in CI
-    cache_dir = Path("/root/dashboard/cache")
+    cache_dir = Path("/var/lib/proteus/cache")
     try:
         cache_available = cache_dir.is_dir()
     except PermissionError:

@@ -53,7 +53,7 @@ def compress_tool_output(
             - was_compressed: bool
 
     Example:
-        >>> out = terminal("ls -la /root/dashboard/")
+        >>> out = terminal("ls -la /var/log/")
         >>> compressed, stats = compress_tool_output(out["output"])
         >>> # compressed now has compact listing
         >>> # stats["hash"] lets you retrieve original if needed
