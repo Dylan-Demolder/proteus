@@ -3,12 +3,19 @@
 Compresses large tool outputs before they enter the LLM context,
 saving 40-60% of tokens with guaranteed reversibility (CCR cache).
 
+Includes multi-turn history compression and per-session profiles.
+
 Usage:
     from proteus import compress_tool_output
     compressed, stats = compress_tool_output(large_tool_output)
-    # If you need the original later:
-    from proteus.ccr import retrieve
-    original = retrieve(stats.get("hash", ""))
+
+    # Multi-turn history compression:
+    from proteus.history import compress_history
+    messages, stats = compress_history(conversation)
+
+    # Per-session profiles:
+    from proteus.profiles import get_profile, apply_profile
+    config = apply_profile(base_config, "aggressive")
 """
 
 from . import config
@@ -17,6 +24,8 @@ from .compressors.json_crusher import crush_json
 from .compressors.log_deduper import dedup_logs
 from .compressors.code import strip_code, compress_file_listing
 from . import ccr
+from . import history
+from . import profiles
 
 
 def compress_tool_output(

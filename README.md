@@ -89,6 +89,8 @@ HeadRoom (the upstream project) is excellent but built for Anthropic's API. Prot
 - **Pure Python, no Rust** — installs in seconds, no compilation
 - **Deterministic only** — no ML compressors on the hot path
 - **Multi-turn compression** — compresses accumulated history, not just live output
+- **3 compression profiles** — conservative (lossless), balanced (default), aggressive (max savings)
+- **Live dashboard** — `/proteus` page showing cache stats, per-compressor breakdown
 - **~90% less code** — same core value, dramatically simpler
 
 ## Requirements
@@ -101,9 +103,11 @@ HeadRoom (the upstream project) is excellent but built for Anthropic's API. Prot
 
 ```bash
 pip install proteus[dev]
-cd tests && python run_all.py   # 106 existing tests
-python test_new.py              # 57 new tests (Phase 1+2)
-# Combined: 163 tests, all passing
+cd test && python run_all.py   # 106 existing tests
+python test_new.py              # 57 new tests (Phase 2 compressors)
+python test_history.py          # 21 history compression tests
+python test_profiles.py         # 91 per-session profile tests
+# Combined: 275 tests, all passing
 ```
 
 ## License
