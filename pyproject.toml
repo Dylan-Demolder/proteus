@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proteus"
+version = "0.1.0"
+description = "Shape-shifting compression for LLM tool outputs — 40-60% token savings, reversible"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    {name = "Dylan Demolder", email = "dylan.m.demolder@gmail.com"},
+]
+keywords = ["compression", "llm", "tokens", "proxy", "openrouter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Filters",
+]
+
+dependencies = [
+    "aiohttp>=3.9",
+    "pyyaml>=6.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+proxy = ["aiohttp>=3.9"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+all = ["aiohttp>=3.9", "pyyaml>=6.0", "click>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/Dylan-Demolder/proteus"
+Repository = "https://github.com/Dylan-Demolder/proteus"
+Documentation = "https://github.com/Dylan-Demolder/proteus#readme"
+
+[project.scripts]
+proteus = "proteus.cli.commands:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["proteus*"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["proteus"]
+omit = ["*/test_*"]
+
+[tool.coverage.report]
+show_missing = true

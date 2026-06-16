@@ -1,0 +1,60 @@
+# Proteus configuration
+# Overrides defaults in config.py. Hot-reloadable by the proxy.
+
+# ── Routing ──
+min_compress_chars: 3000
+
+# ── JSON Crusher ──
+json:
+  max_rows_before_drop: 200
+  drop_head: 10
+  drop_tail: 10
+  auto_columnar: true
+  columnar_min_rows: 5
+
+# ── Log Deduper ──
+logs:
+  min_repetitions: 3
+  keep_first_last: true
+  max_errors: 30
+  max_lines_total: 200
+
+# ── Code Compressor ──
+code:
+  max_function_lines: 15
+  strip_comments: true
+  max_file_lines: 200
+
+# ── File Listing ──
+file_listing:
+  strip_perms: true
+  strip_owner: true
+
+# ── Text Summarizer ──
+text:
+  max_chars: 10000
+  head_chars: 2000
+  tail_chars: 2000
+
+# ── Search Results ──
+search:
+  max_per_file: 5
+  max_total: 30
+  max_files: 15
+
+# ── Diff ──
+diff:
+  max_context_lines: 2
+  max_hunks_per_file: 10
+  max_files: 20
+
+# ── Proxy ──
+proxy:
+  host: "127.0.0.1"
+  port: 8787
+  backend: "openrouter"
+
+# ── CCR Cache ──
+ccr:
+  max_entries: 500
+  cache_dir: "~/.hermes/cache/compress/"
