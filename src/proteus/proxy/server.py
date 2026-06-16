@@ -63,17 +63,13 @@ class ProteusProxy:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    async def handle_chat_completions(self, request: web.Request) -> web.Response:
-        """Handle POST /v1/chat/completions — compress + forward."""
-        self._stats["requests_total"] += 1
+    async def _process_and_forward(self, body: dict, request_headers) -> web.Response:
+        """Core logic: compress body tool results and forward to upstream.
 
-        try:
-            body = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            return web.json_response(
-                {"error": "Invalid JSON body"}, status=400
-            )
-
+        Extracted from handle_chat_completions for testability.
+        Takes a parsed JSON body dict and original request headers.
+        Returns a web.Response (JSON, status 200/502).
+        """
         # Transform: compress tool results
         start = time.time()
         mod_body, ccr_lookup, cstats = transform_request_body(body)
@@ -89,8 +85,8 @@ class ProteusProxy:
         }
         # Pass through any extra headers from original request
         for h in ["X-Title", "HTTP-Referer"]:
-            if h in request.headers:
-                headers[h] = request.headers[h]
+            if h in request_headers:
+                headers[h] = request_headers[h]
 
         upstream_url = f"{self.upstream_url}/chat/completions"
 
@@ -131,6 +127,19 @@ class ProteusProxy:
             return web.json_response(
                 {"error": f"Upstream request failed: {str(e)}"}, status=502
             )
+
+    async def handle_chat_completions(self, request: web.Request) -> web.Response:
+        """Handle POST /v1/chat/completions — compress + forward."""
+        self._stats["requests_total"] += 1
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return web.json_response(
+                {"error": "Invalid JSON body"}, status=400
+            )
+
+        return await self._process_and_forward(body, request.headers)
 
     async def handle_livez(self, request: web.Request) -> web.Response:
         """Health check endpoint."""
