@@ -162,15 +162,19 @@ All data below uses **DeepSeek V4 Flash**. Comparisons show four routing options
 
 ### Token consumption over 30 days
 
-```mermaid
-pie title DeepSeek V4 Flash — token consumption over 30 days (millions)
-  "Without compression" : 60
-  "With Proteus compression" : 43.8
+```
+     ┌──────────────────────────────────────────┐
+  60M┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■  Without compression
+     │
+  40M┤■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■  With Proteus (16.2M fewer)
+     │
+  20M┤
+     │
+    0 ╧
+     Direct / OpenRouter / OpenCode Go   + Proteus
 ```
 
-▸ **16.2M fewer tokens sent** to the API over 30 days with Proteus — the same work, less data, faster responses.
-
-**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%**, meaning the same work uses less of your OpenCode Go credit budget (or costs less on per-token billing).
+**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%** over 30 days, meaning the same work uses less of your OpenCode Go credit budget (or costs less on per-token billing).
 
 ### Proxy latency benchmark
 
