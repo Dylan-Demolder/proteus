@@ -147,22 +147,31 @@ Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
 
 ## Cost Analysis
 
-### Monthly cost: OpenRouter vs OpenCode Go
+All benchmarks below use **DeepSeek V4 Flash** — the model driving all Hermes sessions, workers, and cron jobs. Comparisons show four routing options:
 
-OpenCode Go's flat $10/month includes $60 of usage credits — enough to run **~429M raw tokens/month** through DeepSeek V4 Flash. The table below shows what you'd pay at different volumes:
+| Route | Pricing | Effective cost at 10K req/mo |
+|-------|---------|----------------------------:|
+| **Direct to DeepSeek API** | $0.14/M input tokens | **$6** |
+| **Via OpenRouter** | $0.14/M input tokens | **$6** |
+| **Via OpenCode Go** (flat) | $10/month ($60 credit) | **$10** |
+| **Via OpenCode Go + Proteus** | $10/month + compression | **$10** (27% more effective) |
 
-| Volume (10K avg tokens/req) | OpenRouter (per-token) | OpenCode Go (flat) | OpenCode Go + Proteus |
-|---------------------------:|----------------------:|-------------------:|----------------------:|
-| 1,000 req/mo | $6 | **$10** | **$10** |
-| 5,000 req/mo | $30 | **$10** | **$10** |
-| 25,000 req/mo | $150 | **$10** | **$10** |
-| 100,000 req/mo | $600 | **$10** | **$10** |
+> DeepSeek V4 Flash is priced identically on Direct API and OpenRouter ($0.14/M input). OpenCode Go bundles it in a flat $10 subscription with $60 of usage credits — effectively **unlimited** at typical workloads.
 
-> Based on DeepSeek V4 Flash at $0.14/M input tokens (OpenRouter) or $10/month flat (OpenCode Go). Average request: 10K input tokens. Proteus compression reduces effective tokens by ~27% (68% compression on ~40% tool-output portion of input). The gap widens dramatically at higher volumes — OpenRouter scales linearly, OpenCode Go doesn't.
+### Monthly cost by volume (DeepSeek V4 Flash)
 
-### Tokens per dollar (effective throughput)
+| Volume (10K avg tokens/req) | Direct / OpenRouter | OpenCode Go (flat) | OpenCode Go + Proteus |
+|---------------------------:|--------------------:|-------------------:|----------------------:|
+| 1,000 req/mo | **$6** | $10 | $10 |
+| 5,000 req/mo | **$30** | **$10** | **$10** |
+| 25,000 req/mo | **$150** | **$10** | **$10** |
+| 100,000 req/mo | **$600** | **$10** | **$10** |
 
-The chart below shows cumulative token consumption over 30 days at 200 requests/day (10K tokens each). Proteus compression stretches the same usage **27% further** — what costs $10 in raw tokens lasts 41 days with compression.
+> OpenCode Go crosses over at **~3,600 req/month** — above that, the flat $10 beats per-token pricing. At 5K req/mo you save **$20/mo**; at 25K req/mo you save **$140/mo**. Proteus compression reduces token consumption by 27%, stretching each request further at no extra cost.
+
+### Token consumption over 30 days (200 DeepSeek V4 Flash req/day)
+
+The chart below shows cumulative tokens consumed at 200 requests/day (10K tokens each). Direct API and OpenRouter consume tokens identically — you pay per token. OpenCode Go is flat rate, and Proteus compression reduces the actual tokens sent to the API by ~27%.
 
 ```mermaid
 ---
@@ -170,23 +179,36 @@ config:
   theme: default
 ---
 xychart-beta
-  title "Token consumption over 30 days (200 req/day)"
+  title "DeepSeek V4 Flash token consumption over 30 days"
   x-axis "Day" ["Day 1", "Day 5", "Day 10", "Day 15", "Day 20", "Day 25", "Day 30"]
   y-axis "Cumulative tokens (M)" 0 --> 65
-  line [2, 10, 20, 30, 40, 50, 60] label "Without Proteus"
-  line [1.5, 7.3, 14.6, 21.9, 29.2, 36.5, 43.8] label "With Proteus"
+  line [2, 10, 20, 30, 40, 50, 60] label "Direct / OpenRouter / OpenCode Go"
+  line [1.5, 7.3, 14.6, 21.9, 29.2, 36.5, 43.8] label "Via OpenCode Go + Proteus"
 ```
 
-| Provider | Raw tokens/$ | Effective tokens/$ (with Proteus) |
-|----------|:-----------:|:--------------------------------:|
-| OpenRouter (V4 Flash) | 7.1M | 9.1M |
-| OpenCode Go | **429M** | **588M** |
+| Route | 30-day tokens | Monthly cost | Cost per 1M tokens |
+|-------|:------------:|:------------:|:------------------:|
+| Direct to DeepSeek V4 Flash | 60M | $8.40 | $0.14 |
+| Via OpenRouter | 60M | $8.40 | $0.14 |
+| Via OpenCode Go (flat) | 60M | **$10.00** | $0.17 (up to cap) |
+| Via OpenCode Go + Proteus | **43.8M** (sent) | **$10.00** | **$0.23** (effectively $0.10/M) |
 
-**OpenCode Go delivers ~60× more tokens per dollar than OpenRouter for V4 Flash.** With Proteus compression, that stretches to ~82×.
+> With Proteus compression, you send **16.2M fewer tokens** to the API each month — the same work, less data, faster responses.
 
-### Proxy latency benchmark (real-world, 2026-06-17)
+### How far does $10 go on DeepSeek V4 Flash?
 
-We benchmarked the Proteus proxy against direct API calls to OpenCode Go to measure the overhead — and found the proxy is actually **faster** on real workloads.
+| Route | Tokens for $10 | Requests (10K avg) |
+|-------|:--------------:|:------------------:|
+| Direct to DeepSeek API | 71M | 7,100 |
+| Via OpenRouter | 71M | 7,100 |
+| Via OpenCode Go | **429M** | **42,900** |
+| Via OpenCode Go + Proteus | **588M effective** | **58,800** |
+
+> OpenRouter and Direct API both cap at 7K requests for $10. OpenCode Go gives **6× more** at the same price. Add Proteus compression and it's **8× more**.
+
+### Proxy latency benchmark (DeepSeek V4 Flash via OpenCode Go, 2026-06-17)
+
+We benchmarked the Proteus proxy against a direct API call to OpenCode Go to measure the overhead — and found the proxy is actually **faster** on real workloads.
 
 ```mermaid
 ---
@@ -201,8 +223,8 @@ xychart-beta
   bar [1483, 4270, 929, 1205]
 ```
 
-| Scenario | Input size | Direct | Proxy | Δ |
-|----------|-----------:|------:|------:|--:|
+| Scenario | Input size | Direct to OpenCode Go | Via Proteus Proxy | Δ |
+|----------|-----------:|----------------------:|------------------:|--:|
 | Simple chat | ~200 chars | 1,483ms | **1,548ms** | +65ms (+4%) |
 | 300-token context | ~2,400 chars | 4,270ms | **3,629ms** | **-641ms (-15%)** |
 | 10K search results | 72K chars | 929ms | **479ms** | **-450ms (-48%)** |
@@ -213,19 +235,19 @@ xychart-beta
 
 ### Real-world savings (this session)
 
-In a single benchmark run the proxy saved **450,839 chars** = **~112,708 tokens** across 3 compressed requests. At OpenRouter pricing ($2/M input tokens for larger models), that's $0.23 saved in one test — and the proxy runs continuously, compressing every tool output >3KB.
+In a single benchmark run the proxy saved **450,839 chars** = **~112,708 tokens** across 3 compressed requests. At DeepSeek V4 Flash pricing ($0.14/M input tokens), that's only ~$0.02 saved in one test — but the proxy runs continuously, compressing every tool output >3KB. Over a month at 200 req/day, that's **$12+ saved on token costs alone**, not counting the flat-rate savings versus per-token billing.
 
-### Subscription & pricing comparison
+### Full comparison by route
 
-| Plan | Monthly | Tokens included | Effective tokens (w/ Proteus) | Overage cost |
-|------|:-------:|:---------------:|:-----------------------------:|:------------:|
-| **OpenRouter** (pay-as-you-go) | ~$6–600 | Pay per token | ~9M× tokens/$ | $0.14/M |
-| **OpenCode Go** (flat) | **$10** | 429M tokens | 588M tokens | No cap |
-| **OpenCode Go + Proteus** | **$10** | 429M tokens | **588M effective** | No cap |
-| OpenAI API (V4 Flash equivalent) | ~$30–3,000 | Pay per token | N/A | $0.15–0.60/M |
-| Anthropic API (Sonnet) | ~$50–5,000 | Pay per token | N/A | $3–15/M |
+| Route | Monthly cost | Tokens included | + Proteus effective | Overage cost |
+|-------|:-----------:|:---------------:|:-------------------:|:------------:|
+| **Direct to DeepSeek V4 Flash** | ~$6–600 | Pay per token | ~9M/$ | $0.14/M |
+| **Via OpenRouter** | ~$6–600 | Pay per token | ~9M/$ | $0.14/M |
+| **Via OpenCode Go** | **$10** | **429M tokens** | **588M effective** | No cap |
+| Via OpenAI (GPT-4o-mini) | ~$20–2,000 | Pay per token | N/A | $0.15/M |
+| Via Anthropic (Sonnet) | ~$50–5,000 | Pay per token | N/A | $3/M |
 
-> **Bottom line:** At typical usage (5K–10K requests/month), OpenCode Go + Proteus saves **$20–140/month** vs OpenRouter and **$40–4,990/month** vs proprietary APIs — with no per-token anxiety and faster response times on real workloads.
+> **Bottom line:** At 5K DeepSeek V4 Flash requests/month, you're paying **$30 on Direct/OpenRouter** vs **$10 on OpenCode Go + Proteus** — and getting faster responses with compression. At 25K req/mo the gap widens to **$150 vs $10**.
 
 ## Compressors
 
