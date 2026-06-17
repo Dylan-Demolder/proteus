@@ -66,17 +66,53 @@ class ProteusProxy:
             self._session = aiohttp.ClientSession()
         return self._session
 
+    async def _forward_stream(self, resp: aiohttp.ClientResponse) -> web.StreamResponse:
+        """Forward an upstream SSE stream to the client."""
+        response = web.StreamResponse(
+            status=resp.status,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare()
+
+        async for data, end_of_chunk in resp.content.iter_chunks():
+            if data:
+                try:
+                    await response.write(data)
+                    await response.drain()
+                except (ConnectionResetError, ConnectionAbortedError):
+                    break
+            if end_of_chunk:
+                break
+
+        return response
+
     async def _process_and_forward(self, body: dict, request_headers) -> web.Response:
         """Core logic: compress body tool results and forward to upstream.
 
-        Extracted from handle_chat_completions for testability.
-        Takes a parsed JSON body dict and original request headers.
-        Returns a web.Response (JSON, status 200/502).
+        Args:
+            body: Parsed JSON request body.
+            request_headers: Original request headers.
+
+        Returns:
+            A web.Response (JSON for non-streaming, StreamResponse for SSE).
         """
-        # Transform: compress tool results
-        start = time.time()
-        mod_body, ccr_lookup, cstats = transform_request_body(body)
-        transform_time = time.time() - start
+        is_stream = body.get("stream", False)
+
+        # Transform: compress tool results (only for non-streaming — streaming
+        # responses can't be meaningfully batch-compressed in a proxy)
+        if not is_stream:
+            start = time.time()
+            mod_body, ccr_lookup, cstats = transform_request_body(body)
+            transform_time = time.time() - start
+        else:
+            mod_body, ccr_lookup = body, {}
+            cstats = {"compressed": 0, "total_saved": 0, "total_tokens_saved": 0}
+            transform_time = 0.0
 
         # Apply backend-specific request transformations
         mod_body = self.backend.transform_request(mod_body)
@@ -89,11 +125,9 @@ class ProteusProxy:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        # Add any backend-specific headers
         for h, v in self.backend.extra_headers.items():
             headers[h] = v
 
-        # Pass through standard headers
         for h in ["X-Title", "HTTP-Referer"]:
             if h in request_headers:
                 headers[h] = request_headers[h]
@@ -109,6 +143,12 @@ class ProteusProxy:
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as resp:
                 fwd_time = time.time() - start_fwd
+
+                # Streaming: forward SSE events as-is
+                if is_stream or "text/event-stream" in resp.content_type:
+                    return await self._forward_stream(resp)
+
+                # Non-streaming: parse JSON response
                 response_data = await resp.json()
 
                 # Log if configured
@@ -241,13 +281,11 @@ def create_app(
     app = web.Application()
     app["proxy"] = proxy
 
-    # Routes
     app.router.add_post("/v1/chat/completions", proxy.handle_chat_completions)
     app.router.add_get("/livez", proxy.handle_livez)
     app.router.add_get("/readyz", proxy.handle_readyz)
     app.router.add_get("/health", proxy.handle_livez)
 
-    # Catch-all: proxy everything else to upstream
     app.router.add_route("*", "/{path:.*}", proxy.handle_unknown)
 
     return app
@@ -268,7 +306,6 @@ def start_proxy(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # Resolve backend for display
     try:
         resolved = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
     except ValueError:
@@ -294,5 +331,4 @@ def start_proxy(
 
 
 if __name__ == "__main__":
-    # For testing: python -m proteus.proxy.server
     start_proxy()
