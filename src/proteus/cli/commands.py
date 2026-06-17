@@ -9,6 +9,10 @@ import click
 
 from proteus import compress_tool_output, compress_summary_line
 from proteus.ccr import retrieve, stats as ccr_stats, clear as ccr_clear
+from proteus.proxy.backends import list_backends
+
+
+BACKEND_CHOICES = list(list_backends().keys())
 
 
 @click.group()
@@ -25,20 +29,42 @@ def cli():
 @click.option("--port", default=8787, help="Port to bind to")
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 @click.option("--backend", default="openrouter",
-              type=click.Choice(["openrouter", "openai", "generic"]),
+              type=click.Choice(BACKEND_CHOICES),
               help="Upstream API backend")
 @click.option("--upstream-url", default=None,
-              help="Override upstream API URL")
+              help="Override upstream API URL (for generic backend)")
+@click.option("--api-key-env", default=None,
+              help="Environment variable name for the API key (for generic backend)")
+@click.option("--auto-detect", is_flag=True,
+              help="Auto-detect backend from available API keys")
 @click.option("--config", "config_path", default=None,
               help="Path to config YAML file")
 @click.option("--log-file", default=None,
               help="Path to write request/response JSONL log")
-def proxy(port, host, backend, upstream_url, config_path, log_file):
+def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_path, log_file):
     """Start the Proteus compression proxy.
 
     Sits between your LLM client and API provider, compressing
     large tool outputs before they reach the LLM.
+
+    Available backends:
+    \b
     """
+    # Print backend descriptions
+    descriptions = list_backends()
+    for name, desc in descriptions.items():
+        click.echo(f"      {name}: {desc}", err=True)
+
+    # Auto-detect if requested
+    if auto_detect:
+        from proteus.proxy.backends import auto_detect_backend
+        detected = auto_detect_backend(prefer=backend)
+        backend = detected.name
+        click.echo(f"   Auto-detected backend: {backend}", err=True)
+        # If generic was auto-detected without upstream-url, that's a problem
+        if backend == "generic" and not upstream_url:
+            click.echo("   Warning: generic backend requires --upstream-url", err=True)
+
     try:
         from proteus.proxy.server import start_proxy
     except ImportError as e:
@@ -46,15 +72,16 @@ def proxy(port, host, backend, upstream_url, config_path, log_file):
         click.echo("Install with: pip install proteus[proxy]", err=True)
         sys.exit(1)
 
-    click.echo(f"🚀 Proteus proxy starting on {host}:{port}")
-    click.echo(f"   Backend: {backend}")
-    click.echo(f"   Config:  {config_path or 'defaults'}")
+    click.echo(f"🚀 Proteus proxy starting on {host}:{port}", err=True)
+    click.echo(f"   Backend: {backend}", err=True)
+    click.echo(f"   Config:  {config_path or 'defaults'}", err=True)
 
     start_proxy(
         host=host,
         port=port,
         backend=backend,
         upstream_url=upstream_url,
+        api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
     )
@@ -89,7 +116,7 @@ def file(path, no_ccr):
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--dry-run", is_flag=True, help="Show what would be compressed without writing")
-def cache(path):
+def cache(path, dry_run):
     """Pre-compress a cache file on disk (creates .compressed companion).
 
     The original file is left untouched. The .compressed file is read

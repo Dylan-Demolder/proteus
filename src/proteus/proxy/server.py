@@ -2,6 +2,8 @@
 
 Transparent compression proxy that sits between any OpenAI-compatible
 client and API backend. Compresses large tool outputs inline.
+
+Backends: openrouter, opencode-go, openai, generic
 """
 
 from __future__ import annotations
@@ -16,37 +18,34 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from proteus.proxy.backends import Backend, get_backend, auto_detect_backend
 from proteus.proxy.handler import transform_request_body
 
 logger = logging.getLogger(__name__)
 
-# ── Upstream URLs ──
-BACKEND_URLS = {
-    "openrouter": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-    "openai": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    "generic": None,  # Must be set via --upstream-url
-}
-
-# ── API key env vars ──
-BACKEND_API_KEY_ENV = {
-    "openrouter": "OPENROUTER_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "generic": "OPENROUTER_API_KEY",  # fallback
-}
-
 
 class ProteusProxy:
-    """aiohttp-based transparent compression proxy."""
+    """aiohttp-based transparent compression proxy.
+
+    Compresses large tool outputs in requests before forwarding to
+    the upstream API backend. Supports multiple backends via the
+    backend abstraction layer.
+    """
 
     def __init__(
         self,
-        backend: str = "openrouter",
+        backend: str | Backend = "openrouter",
         upstream_url: str | None = None,
+        api_key_env: str | None = None,
         config_path: str | None = None,
         log_file: str | None = None,
     ):
-        self.backend = backend
-        self.upstream_url = upstream_url or BACKEND_URLS.get(backend, "")
+        # Resolve backend
+        if isinstance(backend, Backend):
+            self.backend = backend
+        else:
+            self.backend = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
+
         self.config_path = config_path
         self.log_file = log_file
         self._session: aiohttp.ClientSession | None = None
@@ -57,6 +56,10 @@ class ProteusProxy:
             "tokens_saved": 0,
             "start_time": time.time(),
         }
+
+    @property
+    def upstream_url(self) -> str:
+        return self.backend.upstream_url
 
     async def _get_upstream_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -75,15 +78,22 @@ class ProteusProxy:
         mod_body, ccr_lookup, cstats = transform_request_body(body)
         transform_time = time.time() - start
 
+        # Apply backend-specific request transformations
+        mod_body = self.backend.transform_request(mod_body)
+
         # Forward to upstream
         upstream = await self._get_upstream_session()
-        api_key = os.environ.get(BACKEND_API_KEY_ENV.get(self.backend, ""), "")
+        api_key = self.backend.api_key
 
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        # Pass through any extra headers from original request
+        # Add any backend-specific headers
+        for h, v in self.backend.extra_headers.items():
+            headers[h] = v
+
+        # Pass through standard headers
         for h in ["X-Title", "HTTP-Referer"]:
             if h in request_headers:
                 headers[h] = request_headers[h]
@@ -120,6 +130,8 @@ class ProteusProxy:
                 self._stats["chars_saved"] += cstats["total_saved"]
                 self._stats["tokens_saved"] += cstats["total_tokens_saved"]
 
+                # Apply backend-specific response transformations
+                response_data = self.backend.transform_response(response_data)
                 return web.json_response(response_data, status=resp.status)
 
         except aiohttp.ClientError as e:
@@ -148,21 +160,23 @@ class ProteusProxy:
             "status": "healthy",
             "alive": True,
             "uptime_seconds": round(time.time() - self._stats["start_time"]),
+            "backend": self.backend.name,
+            "upstream": self.backend.upstream_url,
         })
 
     async def handle_readyz(self, request: web.Request) -> web.Response:
         """Readiness check endpoint."""
-        upstream_ok = False
-        if self.upstream_url:
-            upstream_ok = True  # Assume up — we'll know on first request
+        upstream_ok = bool(self.backend.upstream_url and self.backend.api_key)
         return web.json_response({
             "service": "proteus-proxy",
             "status": "healthy",
             "ready": True,
+            "backend": self.backend.name,
             "checks": {
                 "upstream": {
-                    "url": self.upstream_url,
+                    "url": self.backend.upstream_url,
                     "status": "ok" if upstream_ok else "not_configured",
+                    "api_key_set": bool(self.backend.api_key),
                 },
             },
             "stats": {
@@ -176,7 +190,7 @@ class ProteusProxy:
     async def handle_unknown(self, request: web.Request) -> web.Response:
         """Handle unknown paths by proxying to upstream."""
         upstream = await self._get_upstream_session()
-        api_key = os.environ.get(BACKEND_API_KEY_ENV.get(self.backend, ""), "")
+        api_key = self.backend.api_key
 
         headers = {"Authorization": f"Bearer {api_key}"}
         upstream_url = f"{self.upstream_url}{request.path}"
@@ -209,8 +223,9 @@ class ProteusProxy:
 
 
 def create_app(
-    backend: str = "openrouter",
+    backend: str | Backend = "openrouter",
     upstream_url: str | None = None,
+    api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
 ) -> web.Application:
@@ -218,6 +233,7 @@ def create_app(
     proxy = ProteusProxy(
         backend=backend,
         upstream_url=upstream_url,
+        api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
     )
@@ -242,6 +258,7 @@ def start_proxy(
     port: int = 8787,
     backend: str = "openrouter",
     upstream_url: str | None = None,
+    api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
 ):
@@ -251,15 +268,26 @@ def start_proxy(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # Resolve backend for display
+    try:
+        resolved = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
+    except ValueError:
+        resolved = None
+
     app = create_app(
         backend=backend,
         upstream_url=upstream_url,
+        api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
     )
 
+    proxy = app["proxy"]
+    bk = proxy.backend
     print(f"🌊 Proteus proxy running on http://{host}:{port}")
-    print(f"   Backend: {backend} -> {app['proxy'].upstream_url}")
+    print(f"   Backend: {bk.name} -> {bk.upstream_url}")
+    print(f"   API key: {bk.api_key_env}{' (fallback: ' + bk.api_key_env_fallback + ')' if bk.api_key_env_fallback else ''}")
+    print(f"   API key set: {bool(bk.api_key)}")
     print(f"   Configure your client to use http://{host}:{port}/v1")
 
     web.run_app(app, host=host, port=port, print=lambda *a, **kw: None)

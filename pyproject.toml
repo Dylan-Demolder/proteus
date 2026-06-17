@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "proteus"
 version = "0.1.1"
-description = "Shape-shifting compression for LLM tool outputs — 40-60% token savings, reversible"
+description = "Shape-shifting compression for LLM tool outputs — 40-60% token savings, reversible. Multi-backend proxy supports OpenRouter, OpenCode Go, OpenAI, and custom endpoints."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
