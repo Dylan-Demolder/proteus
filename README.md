@@ -196,7 +196,7 @@ All figures use **42.9K tokens per request** (the average for a typical tool-out
 
 ### Real-world savings
 
-In a single benchmark the proxy saved **450,839 chars** (~112,708 tokens) across 3 large requests. At 200 req/day that's **~$12+/month saved on token costs** — plus the **$20–140/month savings** from OpenCode Go's flat rate vs per-token billing. The proxy compresses every tool output >3KB automatically, so savings accumulate continuously with no user effort.
+In a single benchmark the proxy saved **450,839 chars** (~112,708 tokens) across 3 large requests. At 200 req/day that's **$12+/month saved on token costs** — plus the **$20–140/month savings** from OpenCode Go's flat rate vs per-token billing. The proxy compresses every tool output >3KB automatically, so savings accumulate continuously with no user effort.
 
 ## Compressors
 
