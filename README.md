@@ -162,11 +162,19 @@ OpenCode Go's flat $10/month includes $60 of usage credits — enough to run **~
 
 ### Tokens per dollar (effective throughput)
 
+The chart below shows cumulative token consumption over 30 days at 200 requests/day (10K tokens each). Proteus compression stretches the same usage **27% further** — what costs $10 in raw tokens lasts 41 days with compression.
+
 ```mermaid
-pie title Tokens per dollar (millions)
-  "OpenRouter raw" : 7
-  "OpenCode Go raw" : 429
-  "+ Proteus compression" : 152
+---
+config:
+  theme: default
+---
+xychart-beta
+  title "Token consumption over 30 days (200 req/day)"
+  x-axis "Day" ["Day 1", "Day 5", "Day 10", "Day 15", "Day 20", "Day 25", "Day 30"]
+  y-axis "Cumulative tokens (M)" 0 --> 65
+  line [2, 10, 20, 30, 40, 50, 60] label "Without Proteus"
+  line [1.5, 7.3, 14.6, 21.9, 29.2, 36.5, 43.8] label "With Proteus"
 ```
 
 | Provider | Raw tokens/$ | Effective tokens/$ (with Proteus) |
