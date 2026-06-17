@@ -249,11 +249,11 @@ check("has /health route", any("/health" in p for p in route_paths))
 
 # Test with aiohttp TestClient
 try:
-    from aiohttp.test_utils import AioHTTPTestCase, unittest_run_loop
+    from aiohttp.test_utils import AioHTTPTestCase
     from aiohttp import web
     import unittest
 
-    class ProxyServerTest(unittest.TestCase):
+    class ProxyServerTest(unittest.IsolatedAsyncioTestCase):
         async def asyncSetUp(self):
             self.app = create_app(backend="openrouter")
             self.runner = web.AppRunner(self.app)

@@ -33,6 +33,6 @@ TEXT_HEAD_CHARS = 2000            # Chars to keep from start
 TEXT_TAIL_CHARS = 2000            # Chars to keep from end
 
 # ── CCR Cache ──
-CCR_CACHE_DIR = "~/.hermes/cache/compress/"
+CCR_CACHE_DIR = "~/.proteus/cache/"
 CCR_MAX_ENTRIES = 500
 CCR_HASH_LENGTH = 12              # Short hash for readability in markers

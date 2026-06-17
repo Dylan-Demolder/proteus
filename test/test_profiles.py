@@ -3,8 +3,9 @@
 
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.expanduser("~/.hermes/proteus/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from proteus.profiles import (
     get_profile, apply_profile, list_profiles,
@@ -155,4 +156,5 @@ total = PASS + FAIL
 print(f"\n{'=' * 60}")
 print(f"  PROFILE TESTS: {PASS} passed, {FAIL} failed{' 🎉' if FAIL == 0 else ''}")
 print(f"{'=' * 60}")
-sys.exit(0 if FAIL == 0 else 1)
+if __name__ == "__main__":
+    sys.exit(0 if FAIL == 0 else 1)

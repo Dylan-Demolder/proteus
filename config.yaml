@@ -62,4 +62,4 @@ proxy:
 # ── CCR Cache ──
 ccr:
   max_entries: 500
-  cache_dir: "~/.hermes/cache/compress/"
+  cache_dir: "~/.proteus/cache/"

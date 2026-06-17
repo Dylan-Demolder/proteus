@@ -13,8 +13,9 @@ import json
 import sys
 import os
 import tempfile
+from pathlib import Path
 
-sys.path.insert(0, os.path.expanduser("~/.hermes/proteus/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from proteus import compress_tool_output, compress_summary_line
 from proteus.router import detect_content_type, ContentType, should_compress

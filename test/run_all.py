@@ -5,8 +5,9 @@ Tests every compressor with real-world data, measures savings,
 verifies reversibility, and flags any quality loss.
 """
 import json, sys, os
+from pathlib import Path
 
-sys.path.insert(0, os.path.expanduser("~/.hermes/proteus/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from proteus import compress_tool_output, compress_summary_line
 from proteus.router import detect_content_type, ContentType, should_compress
