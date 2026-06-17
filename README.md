@@ -149,45 +149,24 @@ Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
 
 ### Monthly cost: OpenRouter vs OpenCode Go
 
-The chart below shows what you'd pay at different request volumes with and without Proteus compression. OpenCode Go's flat $10/month includes $60 of usage credits — enough to run **~429M raw tokens/month** through DeepSeek V4 Flash.
+OpenCode Go's flat $10/month includes $60 of usage credits — enough to run **~429M raw tokens/month** through DeepSeek V4 Flash. The table below shows what you'd pay at different volumes:
 
-```mermaid
----
-config:
-  theme: default
----
-xychart-beta
-  title "Monthly cost by request volume (10K avg tokens/request)"
-  x-axis ["1K req", "5K req", "25K req", "100K req"]
-  y-axis "Cost ($)" 0 to 70
-  bar [6, 30, 150, 600]
-  bar [10, 10, 10, 10]
-  bar [10, 10, 10, 10]
-```
-
-| Volume | OpenRouter | OpenCode Go | OpenCode Go + Proteus |
-|--------|-----------:|------------:|----------------------:|
+| Volume (10K avg tokens/req) | OpenRouter (per-token) | OpenCode Go (flat) | OpenCode Go + Proteus |
+|---------------------------:|----------------------:|-------------------:|----------------------:|
 | 1,000 req/mo | $6 | **$10** | **$10** |
 | 5,000 req/mo | $30 | **$10** | **$10** |
 | 25,000 req/mo | $150 | **$10** | **$10** |
 | 100,000 req/mo | $600 | **$10** | **$10** |
 
-> Based on DeepSeek V4 Flash at $0.14/M input tokens (OpenRouter) or $10/month flat (OpenCode Go). Average request: 10K input tokens. Proteus compression reduces effective tokens by ~27% (68% compression on ~40% tool-output portion of input).
+> Based on DeepSeek V4 Flash at $0.14/M input tokens (OpenRouter) or $10/month flat (OpenCode Go). Average request: 10K input tokens. Proteus compression reduces effective tokens by ~27% (68% compression on ~40% tool-output portion of input). The gap widens dramatically at higher volumes — OpenRouter scales linearly, OpenCode Go doesn't.
 
 ### Tokens per dollar (effective throughput)
 
 ```mermaid
----
-config:
-  theme: default
----
-xychart-beta
-  title "Tokens per dollar (higher is better)"
-  x-axis ["OpenRouter", "OpenCode Go", "OpenCode Go + Proteus"]
-  y-axis "M tokens" 0 to 600
-  bar [71]
-  bar [429]
-  bar [588]
+pie title Tokens per dollar (millions)
+  "OpenRouter raw" : 7
+  "OpenCode Go raw" : 429
+  "+ Proteus compression" : 152
 ```
 
 | Provider | Raw tokens/$ | Effective tokens/$ (with Proteus) |
@@ -209,7 +188,7 @@ config:
 xychart-beta
   title "Response time: proxy vs direct (lower is better)"
   x-axis ["Simple chat", "300-token context", "10K search results", "50K search results"]
-  y-axis "Latency (ms)" 0 to 5000
+  y-axis "Latency (ms)" 0 --> 5000
   bar [1548, 3629, 479, 545]
   bar [1483, 4270, 929, 1205]
 ```
