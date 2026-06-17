@@ -79,15 +79,13 @@ class ProteusProxy:
         )
         await response.prepare(request)
 
-        async for data, end_of_chunk in resp.content.iter_chunks():
+        async for data, _ in resp.content.iter_chunks():
             if data:
                 try:
                     await response.write(data)
                     await response.drain()
                 except (ConnectionResetError, ConnectionAbortedError):
                     break
-            if end_of_chunk:
-                break
 
         return response
 
