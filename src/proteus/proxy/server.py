@@ -66,7 +66,7 @@ class ProteusProxy:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    async def _forward_stream(self, resp: aiohttp.ClientResponse) -> web.StreamResponse:
+    async def _forward_stream(self, resp: aiohttp.ClientResponse, request: web.Request | None = None) -> web.StreamResponse:
         """Forward an upstream SSE stream to the client."""
         response = web.StreamResponse(
             status=resp.status,
@@ -77,7 +77,7 @@ class ProteusProxy:
                 "X-Accel-Buffering": "no",
             },
         )
-        await response.prepare()
+        await response.prepare(request)
 
         async for data, end_of_chunk in resp.content.iter_chunks():
             if data:
@@ -91,12 +91,13 @@ class ProteusProxy:
 
         return response
 
-    async def _process_and_forward(self, body: dict, request_headers) -> web.Response:
+    async def _process_and_forward(self, body: dict, request_headers, request: web.Request | None = None) -> web.Response:
         """Core logic: compress body tool results and forward to upstream.
 
         Args:
             body: Parsed JSON request body.
             request_headers: Original request headers.
+            request: Original request (needed for streaming SSE responses).
 
         Returns:
             A web.Response (JSON for non-streaming, StreamResponse for SSE).
@@ -146,7 +147,7 @@ class ProteusProxy:
 
                 # Streaming: forward SSE events as-is
                 if is_stream or "text/event-stream" in resp.content_type:
-                    return await self._forward_stream(resp)
+                    return await self._forward_stream(resp, request)
 
                 # Non-streaming: parse JSON response
                 response_data = await resp.json()
@@ -191,7 +192,7 @@ class ProteusProxy:
                 {"error": "Invalid JSON body"}, status=400
             )
 
-        return await self._process_and_forward(body, request.headers)
+        return await self._process_and_forward(body, request.headers, request)
 
     async def handle_livez(self, request: web.Request) -> web.Response:
         """Health check endpoint."""
