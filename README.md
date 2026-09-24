@@ -3,7 +3,6 @@
 **Shape-shifting compression for LLM tool outputs.**
 
 [![CI](https://github.com/Dylan-Demolder/proteus/actions/workflows/ci.yml/badge.svg)](https://github.com/Dylan-Demolder/proteus/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/proteus-compress?color=brightgreen&label=pypi&logo=pypi)](https://pypi.org/project/proteus-compress/)
 [![Python 3.10–3.14](https://img.shields.io/badge/python-3.10%E2%80%933.14-blue.svg)](https://www.python.org/downloads/)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Checked with ruff](https://img.shields.io/badge/lint-ruff-1F4E3B?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
@@ -31,16 +30,19 @@ Tool output (terminal, file read, search results)
 
 ## Quick start
 
+Install straight from GitHub:
+
 ```bash
-pip install proteus-compress
+pip install git+https://github.com/Dylan-Demolder/proteus.git
 ```
 
-> **Note:** The distribution name is `proteus-compress` — `proteus` was already
-> taken on PyPI by an unrelated project. The import name and CLI are unchanged:
-> `import proteus` / `proteus proxy`.
+> **Note:** The distribution is named `proteus-compress` — `proteus` was already
+> taken on PyPI by an unrelated project. The import name and CLI entry point are
+> unchanged: `import proteus` / `proteus proxy`.
 >
-> Prefer running from source? Install straight from GitHub:
-> `pip install git+https://github.com/Dylan-Demolder/proteus.git`
+> The package is **not on PyPI yet**; once it is, the install becomes
+> `pip install proteus-compress`. Verify a given install with
+> `pip show proteus-compress`.
 
 ### Proxy mode (transparent, no code changes)
 
