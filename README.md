@@ -39,7 +39,7 @@ pip install proteus-compress
 > taken on PyPI by an unrelated project. The import name and CLI are unchanged:
 > `import proteus` / `proteus proxy`.
 >
-> Not on PyPI yet? Install straight from GitHub:
+> Prefer running from source? Install straight from GitHub:
 > `pip install git+https://github.com/Dylan-Demolder/proteus.git`
 
 ### Proxy mode (transparent, no code changes)

@@ -125,6 +125,7 @@ ignore = [
 # unused imports and redefinitions are part of the style there.
 "test/**" = ["F401", "E402", "SIM117"]
 "benchmarks/**" = ["E402"]
+
 [tool.mypy]
 python_version = "3.10"
 files = ["src/proteus"]

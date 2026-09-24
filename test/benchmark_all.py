@@ -42,7 +42,6 @@ def bench(label, content, compressor_fn=None):
     #      stored, so there's no hash to retrieve. Output == input, so the
     #      original is trivially intact. Counting this as "N" would report
     #      rev: False for inputs we never touched.
-    hash_val = stats.get("hash", "")
     if not stats.get("was_compressed", False):
         reversible = result == content
     else:
