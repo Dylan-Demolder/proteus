@@ -33,11 +33,21 @@ def bench(label, content, compressor_fn=None):
     orig = stats.get("original_chars", len(content))
     comp = len(result)
 
-    # Verify reversibility
-    restored = None
-    if hash_val:
-        restored = retrieve(hash_val)
-    reversible = restored is not None and restored == content
+    # Verify reversibility.
+    #
+    # Two distinct cases:
+    #   1. Compression happened -> the original must come back byte-identical
+    #      from the CCR cache via the hash.
+    #   2. Passthrough (input below threshold or no savings) -> nothing was
+    #      stored, so there's no hash to retrieve. Output == input, so the
+    #      original is trivially intact. Counting this as "N" would report
+    #      rev: False for inputs we never touched.
+    hash_val = stats.get("hash", "")
+    if not stats.get("was_compressed", False):
+        reversible = result == content
+    else:
+        restored = retrieve(hash_val) if hash_val else None
+        reversible = restored is not None and restored == content
 
     print(f"  {label:40s}  {ct:18s}  {orig:>8,} -> {comp:<8,}  {savings:>6.1f}%  {elapsed:>7.1f}ms  {'Y' if reversible else 'N'}")
 

@@ -97,13 +97,27 @@ def retrieve_compressed(content_hash: str) -> str | None:
 
 
 def _maybe_evict(cache_dir: Path):
-    """LRU eviction: if over CCR_MAX_ENTRIES, remove oldest files."""
-    entries = sorted(cache_dir.glob("*.json"), key=os.path.getmtime)
+    """LRU eviction: if over CCR_MAX_ENTRIES, remove oldest files.
+
+    Entries are collected defensively: another process (or a concurrent proxy
+    request) may unlink a file between glob() and stat(), and getmtime() on a
+    vanished path raises FileNotFoundError. Skip anything that disappears.
+    """
+    entries: list[tuple[float, Path]] = []
+    for path in cache_dir.glob("*.json"):
+        try:
+            entries.append((os.path.getmtime(path), path))
+        except OSError:
+            # Vanished (or unreadable) — another worker already evicted it.
+            continue
+    entries.sort(key=lambda item: item[0])
+
     while len(entries) > config.CCR_MAX_ENTRIES:
-        oldest = entries[0]
+        _oldest_mtime, oldest = entries[0]
         try:
             oldest.unlink()
         except OSError:
+            # Already gone — not an error, we just wanted it removed.
             pass
         entries = entries[1:]
 
@@ -111,13 +125,21 @@ def _maybe_evict(cache_dir: Path):
 def stats() -> dict:
     """Get CCR cache statistics."""
     cache_dir = _cache_dir()
-    entries = list(cache_dir.glob("*.json"))
-    total_size = sum(f.stat().st_size for f in entries)
+    total_size = 0
+    count = 0
+    for path in cache_dir.glob("*.json"):
+        try:
+            total_size += path.stat().st_size
+            count += 1
+        except OSError:
+            # Evicted by a concurrent worker between glob() and stat().
+            continue
+
     return {
-        "entries": len(entries),
+        "entries": count,
+        "max_entries": config.CCR_MAX_ENTRIES,
         "total_size_bytes": total_size,
         "cache_dir": str(cache_dir),
-        "max_entries": config.CCR_MAX_ENTRIES,
     }
 
 

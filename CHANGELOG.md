@@ -46,6 +46,26 @@ First release published to PyPI as `proteus-compress`.
 
 ### Fixed
 
+- **Unrecoverable output when a compressor produced a larger result than its
+  input.** `compress_tool_output()` ran the compressor, found the output was
+  *bigger* than the input, skipped CCR storage (the `len(compressed) <
+  len(content)` guard) — but still returned the mutated payload. Callers saw
+  `was_compressed=False, hash=""` on bytes that had silently changed, with no
+  way to recover the original. This violated the "originals are never lost"
+  guarantee on 2 of the 48 benchmark scenarios (misdetected content type on
+  deeply nested JSON, and multi-line log entries with no redundancy). Now the
+  original is returned untouched whenever compression doesn't pay off.
+  Benchmark: **15 → 0 non-reversible cases; `rev: True` across all 48.**
+- **`FileNotFoundError` race in the CCR cache under concurrency.**
+  `_maybe_evict()` called `os.path.getmtime()` on paths from a prior `glob()`,
+  and `stats()` did the same with `stat()`. If another process evicted a file
+  in between — which the concurrent proxy makes routine — the call raised and
+  took the request down. Both now skip vanished entries. Verified with 6
+  concurrent workers × 40 store+stats cycles: 0 crashes.
+- **Benchmark reported `rev: False` for passthrough inputs.** Inputs below the
+  compression threshold are never stored, so there was no hash to retrieve;
+  the benchmark counted that as non-reversible even though output == input.
+  Now distinguishes "not compressed" from "compressed and unrecoverable".
 - **`proteus retrieve <hash>` could never work.** The Click command function
   was named `retrieve`, shadowing the imported `ccr.retrieve`. The callback
   therefore invoked the Click `Command` object with the hash string as argv,

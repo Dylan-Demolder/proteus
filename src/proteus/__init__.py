@@ -141,9 +141,19 @@ def compress_tool_output(
         compressed, compressor_stats = summarize_text(content)
         compressor = "text"
 
-    # Store in CCR cache if compression actually reduced size
+    # Store in CCR cache if compression actually reduced size.
     content_hash = ""
-    if compressor is not None and len(compressed) < len(content):
+    if compressor is None or len(compressed) >= len(content):
+        # Compression didn't pay off — the compressor either left the input
+        # alone or produced something LARGER (misdetected content type, or an
+        # input with no redundancy to exploit).
+        #
+        # Discard the compressor's output and return the original untouched.
+        # Otherwise we'd hand back a mutated payload with no hash stored,
+        # which is unrecoverable and breaks the reversibility guarantee:
+        # callers see was_compressed=False but the bytes still changed.
+        compressed = content
+    else:
         stats["was_compressed"] = True
         stats["compressed_chars"] = len(compressed)
         stats["compressor"] = compressor
