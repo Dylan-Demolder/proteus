@@ -24,6 +24,16 @@ First release published to PyPI as `proteus-compress`.
   configuration for GitHub Actions and pip dependencies.
 - **`CHANGELOG.md`** (this file).
 - Python 3.13 and 3.14 to the test matrix and trove classifiers.
+- **Hermetic proxy integration tests.** `test_chat_completions` and
+  `test_unknown_route` made *live* calls to `openrouter.ai`, so CI depended on
+  a third party's uptime and status codes — `2d8dbfb` had already weakened the
+  assertions to "non-2xx"/"non-5xx" because the real upstream kept moving them.
+  They now run against a local mock upstream on `127.0.0.1`, which allows
+  **exact** assertions: `200` + echoed body for pass-through, `200` + relayed
+  body for route forwarding, `401` relayed rather than `502`. Two tests added
+  (`test_upstream_error_is_relayed`, `test_no_live_network_calls`):
+  6 → 8 integration tests. Verified passing with a deliberately broken TLS
+  trust store and with all network proxied to a dead port.
 
 ### Changed
 
@@ -56,6 +66,12 @@ First release published to PyPI as `proteus-compress`.
   deeply nested JSON, and multi-line log entries with no redundancy). Now the
   original is returned untouched whenever compression doesn't pay off.
   Benchmark: **15 → 0 non-reversible cases; `rev: True` across all 48.**
+- **`proteus clear` could crash under concurrency.** `ccr.clear()` called
+  `unlink()` on paths from a prior `glob()`; if another process removed a file
+  first, `FileNotFoundError` propagated out of the Click command as a
+  non-zero exit. Same class of bug as the `_maybe_evict()` race above —
+  this was missed the first time round. Now skips vanished entries.
+  Verified with 8 concurrent workers × 20 clear+store cycles: 0 crashes.
 - **`FileNotFoundError` race in the CCR cache under concurrency.**
   `_maybe_evict()` called `os.path.getmtime()` on paths from a prior `glob()`,
   and `stats()` did the same with `stat()`. If another process evicted a file
@@ -66,6 +82,13 @@ First release published to PyPI as `proteus-compress`.
   compression threshold are never stored, so there was no hash to retrieve;
   the benchmark counted that as non-reversible even though output == input.
   Now distinguishes "not compressed" from "compressed and unrecoverable".
+- **`test/run_all.py` shared the global CCR cache**, so running suites
+  concurrently raced on `clear()`/`store()` and its absolute entry-count
+  assertions (`== 0`, `== 10`) failed intermittently. It now redirects
+  `config.CCR_CACHE_DIR` to a private temp dir for the life of the process —
+  the same technique `test_coverage.py` already used — and cleans up on exit.
+  Running the suite no longer pollutes `~/.proteus/cache` either.
+  Verified: 3 concurrent loops × 8 suites = 24 runs, all exit 0.
 - **`proteus retrieve <hash>` could never work.** The Click command function
   was named `retrieve`, shadowing the imported `ccr.retrieve`. The callback
   therefore invoked the Click `Command` object with the hash string as argv,

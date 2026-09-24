@@ -144,7 +144,19 @@ def stats() -> dict:
 
 
 def clear():
-    """Clear all cached content."""
+    """Clear all cached content.
+
+    Tolerant of concurrent callers: another process may unlink a file between
+    glob() and unlink(), which would otherwise raise FileNotFoundError and
+    surface as a non-zero exit from `proteus clear`.
+    """
     cache_dir = _cache_dir()
-    for f in cache_dir.glob("*.json"):
-        f.unlink()
+    removed = 0
+    for path in cache_dir.glob("*.json"):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            # Already removed by a concurrent clearer — that's the goal.
+            continue
+    return removed
