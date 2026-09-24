@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "proteus"
-version = "0.1.1"
+name = "proteus-compress"
+version = "0.2.0"
 description = "Shape-shifting compression for LLM tool outputs — 40-60% token savings, reversible. Multi-backend proxy supports OpenRouter, OpenCode Go, OpenAI, and custom endpoints."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,15 @@ license = "Apache-2.0"
 authors = [
     {name = "Dylan Demolder", email = "dylan.m.demolder@gmail.com"},
 ]
-keywords = ["compression", "llm", "tokens", "proxy", "openrouter"]
+keywords = [
+    "compression",
+    "llm",
+    "tokens",
+    "proxy",
+    "openrouter",
+    "context-window",
+    "agent",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -20,8 +28,11 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Filters",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -32,13 +43,21 @@ dependencies = [
 
 [project.optional-dependencies]
 proxy = ["aiohttp>=3.9"]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.21"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "coverage>=7.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
 all = ["aiohttp>=3.9", "pyyaml>=6.0", "click>=8.0"]
 
 [project.urls]
 Homepage = "https://github.com/Dylan-Demolder/proteus"
 Repository = "https://github.com/Dylan-Demolder/proteus"
 Documentation = "https://github.com/Dylan-Demolder/proteus#readme"
+Changelog = "https://github.com/Dylan-Demolder/proteus/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Dylan-Demolder/proteus/issues"
 
 [project.scripts]
 proteus = "proteus.cli.commands:cli"
@@ -47,14 +66,73 @@ proteus = "proteus.cli.commands:cli"
 where = ["src"]
 include = ["proteus*"]
 
+[tool.setuptools.package-data]
+proteus = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["test"]
-python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+# Most suites are flat scripts with a check() counter, not pytest-collectable
+# classes. CI runs every suite as a subprocess (see .github/workflows/ci.yml)
+# so a non-zero exit code fails the build. test_coverage.py is the one hybrid:
+# it exposes ProxyServerTest for pytest and still works as a script.
+python_files = ["test_*.py", "run_all.py"]
 
 [tool.coverage.run]
 source = ["proteus"]
 omit = ["*/test_*"]
+branch = false
+parallel = false
 
 [tool.coverage.report]
 show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "src/proteus.egg-info",
+    "demos",
+    "integrations",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear (real footguns: mutable defaults, bare except, ...)
+    "C4",  # comprehensions
+    "SIM", # simplifications
+]
+ignore = [
+    "E501",   # line length — formatter's job, not a lint failure
+    "B008",   # function call in default arg (Click decorators need this)
+    "SIM105", # contextlib.suppress is not always clearer
+    "SIM108", # ternary rewrite is often less readable
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test scripts use a shared global PASS/FAIL counter and print emoji status;
+# unused imports and redefinitions are part of the style there.
+"test/**" = ["F401", "E402", "SIM117"]
+"benchmarks/**" = ["E402"]
+[tool.mypy]
+python_version = "3.10"
+files = ["src/proteus"]
+warn_unused_configs = true
+show_error_codes = true
+# Not --strict: aim for "clean under default rules", which CI enforces.
+# Turning these on incrementally is the path to strict later.
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_return_any = false
+warn_unused_ignores = true

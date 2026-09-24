@@ -1,20 +1,20 @@
 """Proteus multi-scenario benchmarks — each compressor tested across varied data patterns."""
 
-import sys
 import json
+import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from proteus import compress_tool_output
+from proteus.ccr import retrieve
+from proteus.compressors.code import strip_code
+from proteus.compressors.diff import compress_diff
 from proteus.compressors.json_crusher import crush_json
 from proteus.compressors.log_deduper import dedup_logs
-from proteus.compressors.code import strip_code
 from proteus.compressors.search import compress_search
-from proteus.compressors.diff import compress_diff
 from proteus.compressors.text import summarize_text
-from proteus.ccr import retrieve
 
 
 def bench(label, content, compressor_fn=None):
@@ -216,10 +216,10 @@ def py_func(name, has_doc=True, has_comment=True):
         lines.append(f'    """Do something with {name} and return a result."""')
     if has_comment:
         lines.append(f"    # Initialize the {name} processor")
-    lines.append(f"    result = []")
-    lines.append(f"    for i in range(10):")
-    lines.append(f"        result.append(i * 2)")
-    lines.append(f"    return result")
+    lines.append("    result = []")
+    lines.append("    for i in range(10):")
+    lines.append("        result.append(i * 2)")
+    lines.append("    return result")
     return "\n".join(lines)
 
 def js_func(name):
@@ -572,6 +572,7 @@ print()
 
 # Group by category
 from collections import defaultdict
+
 by_cat = defaultdict(list)
 for r in all_results:
     by_cat[r["category"]].append(r)

@@ -1,0 +1,77 @@
+name: 🐛 Bug report
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        **Security issues** (secret leakage, cache exposure, proxy
+        authentication) should go through the private process in
+        [SECURITY.md](https://github.com/Dylan-Demolder/proteus/blob/main/SECURITY.md)
+        instead — please don't file those publicly.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `pip show proteus-compress`, or the commit SHA.
+      placeholder: "proteus-compress 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, and how you installed it.
+      placeholder: "macOS 15 / Python 3.12 / pip install proteus-compress"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Where did this happen?
+      options:
+        - Library (`compress_tool_output`)
+        - CLI (`proteus file`, `proteus stats`, `proteus retrieve`, ...)
+        - Proxy (`proteus proxy`)
+        - Compression / decompression correctness
+        - Installation or packaging
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Clear description of the behaviour you saw vs. what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal input and the exact commands. Smaller input is better.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Stack trace, CLI output, or proxy logs. Redact API keys.
+      render: text

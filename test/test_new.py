@@ -10,22 +10,24 @@ Tests:
 """
 
 import json
-import sys
 import os
+import sys
 import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from proteus import compress_tool_output, compress_summary_line
-from proteus.router import detect_content_type, ContentType, should_compress
-from proteus.ccr import retrieve, stats as ccr_stats, clear as ccr_clear
-from proteus.compressors.json_crusher import crush_json, compact_json
-from proteus.compressors.log_deduper import dedup_logs
-from proteus.compressors.code import strip_code, compress_file_listing
-from proteus.compressors.search import compress_search
+from proteus import compress_summary_line, compress_tool_output
+from proteus.ccr import clear as ccr_clear
+from proteus.ccr import retrieve
+from proteus.ccr import stats as ccr_stats
+from proteus.compressors.code import compress_file_listing, strip_code
 from proteus.compressors.diff import compress_diff
+from proteus.compressors.json_crusher import compact_json, crush_json
+from proteus.compressors.log_deduper import dedup_logs
+from proteus.compressors.search import compress_search
 from proteus.compressors.text import summarize_text
+from proteus.router import ContentType, detect_content_type, should_compress
 
 PASS = 0
 FAIL = 0
@@ -135,7 +137,11 @@ check("Text: short unchanged", compressed == short_text)
 # ════════════════════════════════════════════════
 section("4. Proxy — Tool Injection")
 
-from proteus.proxy.inject import create_retrieve_tool_definition, inject_retrieve_tool, RETRIEVE_TOOL_NAME
+from proteus.proxy.inject import (
+    RETRIEVE_TOOL_NAME,
+    create_retrieve_tool_definition,
+    inject_retrieve_tool,
+)
 
 tool_def = create_retrieve_tool_definition()
 check("Inject: tool has correct name", tool_def["function"]["name"] == RETRIEVE_TOOL_NAME)
@@ -303,3 +309,5 @@ if FAIL == 0:
     print(f"\n  ✅ All {PASS} new tests pass!")
 else:
     print(f"\n  ❌ {FAIL} new failures — fix before shipping.")
+
+sys.exit(1 if FAIL else 0)

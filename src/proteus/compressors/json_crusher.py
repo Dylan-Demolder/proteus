@@ -10,9 +10,9 @@ with a reversible marker: [CCR_string:<hash>]. The original text is stored in th
 CCR cache and retrievable via proteus_retrieve.
 """
 
-import json
 import hashlib
-from collections import Counter
+import json
+from typing import Any
 
 from .. import config
 
@@ -115,7 +115,7 @@ def crush_json(content: str) -> tuple[str, dict]:
     Returns:
         (compressed_string, stats_dict)
     """
-    stats = {"original_chars": len(content), "mode": "passthrough"}
+    stats: dict[str, Any] = {"original_chars": len(content), "mode": "passthrough"}
 
     try:
         parsed = json.loads(content)
@@ -199,7 +199,7 @@ def _drop_rows(parsed: list, n: int, stats: dict) -> tuple[str, dict]:
     if summary_parts:
         compressed += f"// Summary of dropped range: {'; '.join(summary_parts)}\n"
     compressed += f"{tail_compact}\n"
-    compressed += f"[/SHOWING]"
+    compressed += "[/SHOWING]"
 
     stats["mode"] = "row_drop"
     stats["compressed_chars"] = len(compressed)

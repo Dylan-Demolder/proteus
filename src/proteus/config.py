@@ -1,4 +1,4 @@
-"""Tunable thresholds for the Hermes Compression Engine."""
+"""Tunable thresholds for the Proteus compression engine."""
 
 # ── Routing ──
 MIN_COMPRESS_CHARS = 3000  # Skip content smaller than this (no point compressing short strings)

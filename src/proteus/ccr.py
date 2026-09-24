@@ -4,12 +4,11 @@ Stores original content indexed by hash so the LLM can retrieve
 uncompressed originals when needed.
 """
 
-import os
-import json
 import hashlib
+import json
+import os
 import time
 from pathlib import Path
-from typing import Optional
 
 from . import config
 
@@ -62,7 +61,7 @@ def store(original: str, compressed: str, content_type: str, stats: dict) -> str
     return content_hash
 
 
-def retrieve(content_hash: str) -> Optional[str]:
+def retrieve(content_hash: str) -> str | None:
     """Retrieve original content by hash.
 
     Args:
@@ -79,11 +78,11 @@ def retrieve(content_hash: str) -> Optional[str]:
         with open(cache_path) as f:
             entry = json.load(f)
         return entry.get("original")
-    except (json.JSONDecodeError, KeyError, IOError):
+    except (OSError, json.JSONDecodeError, KeyError):
         return None
 
 
-def retrieve_compressed(content_hash: str) -> Optional[str]:
+def retrieve_compressed(content_hash: str) -> str | None:
     """Retrieve the compressed version by hash (for inspection)."""
     cache_dir = _cache_dir()
     cache_path = cache_dir / f"{content_hash}.json"
@@ -93,7 +92,7 @@ def retrieve_compressed(content_hash: str) -> Optional[str]:
         with open(cache_path) as f:
             entry = json.load(f)
         return entry.get("compressed")
-    except (json.JSONDecodeError, KeyError, IOError):
+    except (OSError, json.JSONDecodeError, KeyError):
         return None
 
 

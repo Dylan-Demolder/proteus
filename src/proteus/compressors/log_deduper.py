@@ -9,12 +9,9 @@ Strategy:
 """
 
 import re
-import hashlib
 from collections import Counter
-from typing import Optional
 
 from .. import config
-
 
 # ── Stack trace detection ──
 _STACK_TRACE_LINES = re.compile(
@@ -85,7 +82,7 @@ def dedup_logs(content: str) -> tuple[str, dict]:
         raw_by_norm.setdefault(norm, []).append((i, line))
 
     # Compute repetition counts
-    pattern_counts = Counter()
+    pattern_counts: Counter[str] = Counter()
     for norm, _, _, _ in classified:
         if norm:
             pattern_counts[norm] += 1
@@ -101,7 +98,7 @@ def dedup_logs(content: str) -> tuple[str, dict]:
     if stats["original_lines"] > 20:
         output_lines.append(f"# {stats['original_lines']} lines, {stats['unique_patterns']} unique patterns")
 
-    for i, (norm, score, is_error, is_stack) in enumerate(classified):
+    for i, (norm, _score, _is_error, is_stack) in enumerate(classified):
         raw_line = lines[i] if i < len(lines) else ""
 
         if not raw_line.strip():
@@ -167,7 +164,6 @@ def _dedup_blocks(lines: list[str]) -> list[str]:
     Groups consecutive non-empty lines by their first line's normalized form.
     If a block repeats >= 3 times, replaces with a single occurrence + count.
     """
-    from collections import Counter
     output: list[str] = []
     i = 0
     n = len(lines)
@@ -186,7 +182,7 @@ def _dedup_blocks(lines: list[str]) -> list[str]:
             continue
 
         # Check if this block repeats
-        block_key = tuple(_normalize_for_dedup(l) for l in block)
+        block_key = tuple(_normalize_for_dedup(ln) for ln in block)
         count = 1
         k = j
         while k < n:
@@ -197,7 +193,7 @@ def _dedup_blocks(lines: list[str]) -> list[str]:
                 else:
                     break
             if len(next_block) == len(block):
-                next_key = tuple(_normalize_for_dedup(l) for l in next_block)
+                next_key = tuple(_normalize_for_dedup(ln) for ln in next_block)
                 if next_key == block_key:
                     count += 1
                     k += len(block)
@@ -211,8 +207,8 @@ def _dedup_blocks(lines: list[str]) -> list[str]:
 
         if count >= 3:
             output.append(f"[x{count}] {lines[i]}")
-            for l in block[1:]:
-                output.append(f" .  {l}")
+            for ln in block[1:]:
+                output.append(f" .  {ln}")
             i = k
         else:
             output.extend(block)

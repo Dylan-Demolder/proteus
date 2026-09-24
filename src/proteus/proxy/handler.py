@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 from typing import Any
 
 from proteus import compress_tool_output
@@ -118,14 +117,14 @@ def transform_request_body(body: dict) -> tuple[dict, dict[str, str], dict[str, 
 
     Returns:
         (modified_body, ccr_lookup, stats)
-        
+
         modified_body has compressed tool results
         ccr_lookup maps hashes to original content for retrieval
         stats has compression statistics
     """
     messages = body.get("messages", [])
     stats = _process_messages(messages)
-    
+
     # Collect CCR hashes for lookup
     ccr_lookup: dict[str, str] = {}
     for message in messages:

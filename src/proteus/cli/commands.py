@@ -1,16 +1,15 @@
 """Proteus CLI — command-line interface for compression and proxy."""
 
-import json
-import os
 import sys
 from pathlib import Path
 
 import click
 
-from proteus import compress_tool_output, compress_summary_line
-from proteus.ccr import retrieve, stats as ccr_stats, clear as ccr_clear
+from proteus import compress_tool_output
+from proteus.ccr import clear as ccr_clear
+from proteus.ccr import retrieve as ccr_retrieve
+from proteus.ccr import stats as ccr_stats
 from proteus.proxy.backends import list_backends
-
 
 BACKEND_CHOICES = list(list_backends().keys())
 
@@ -151,7 +150,7 @@ def cache(path, dry_run):
 def stats():
     """Show compression cache statistics."""
     s = ccr_stats()
-    click.echo(f"📊 Proteus CCR Cache")
+    click.echo("📊 Proteus CCR Cache")
     click.echo(f"   Entries:    {s['entries']:,} / {s['max_entries']:,}")
     click.echo(f"   Cache dir:  {s['cache_dir']}")
     click.echo(f"   Disk usage: {s['total_size_bytes'] / 1024:.1f} KB")
@@ -169,7 +168,7 @@ def clear():
 @click.argument("hash_key")
 def retrieve(hash_key):
     """Retrieve original content from cache by hash."""
-    original = retrieve(hash_key)
+    original = ccr_retrieve(hash_key)
     if original is None:
         click.echo(f"❌ Hash '{hash_key}' not found in cache")
         sys.exit(1)

@@ -39,12 +39,11 @@ def section(s: str):
 # =============================================================================
 section("Proxy Server — Mocked Methods")
 
-from proteus.proxy.server import create_app, ProteusProxy
+from proteus.proxy.server import ProteusProxy, create_app
 
 
 # --- Test upstream forwarding with mock session ---
 async def _test_upstream_forward():
-    import aiohttp
 
     proxy = ProteusProxy(backend="openrouter")
 
@@ -115,7 +114,8 @@ async def _test_upstream_error():
 
 # --- Test log writer ---
 async def _test_log_writer():
-    import tempfile, os
+    import os
+    import tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         log_path = f.name
 
@@ -136,7 +136,6 @@ async def _test_log_writer_none():
 
 # --- Test unknown route forwarding ---
 async def _test_unknown_route():
-    import aiohttp
     proxy = ProteusProxy(backend="openrouter")
 
     mock_resp = AsyncMock()
@@ -169,7 +168,9 @@ async def _test_stats():
 
 # Run async tests
 import asyncio
+
 import aiohttp
+
 
 async def run_proxy_tests():
     await _test_upstream_forward()
@@ -187,7 +188,7 @@ asyncio.run(run_proxy_tests())
 # =============================================================================
 section("Handler — User Message Compression")
 
-from proteus.proxy.handler import _process_messages, transform_request_body, handle_tool_calls
+from proteus.proxy.handler import _process_messages, handle_tool_calls, transform_request_body
 
 # Force user message compression by making large compressible content
 big_json = json.dumps({

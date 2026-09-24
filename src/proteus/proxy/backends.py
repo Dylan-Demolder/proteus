@@ -75,8 +75,8 @@ class Backend:
             return body
 
         modified = dict(body)
-        for field in self.strip_request_fields:
-            modified.pop(field, None)
+        for field_name in self.strip_request_fields:
+            modified.pop(field_name, None)
         return modified
 
     def transform_response(self, response_data: dict[str, Any]) -> dict[str, Any]:

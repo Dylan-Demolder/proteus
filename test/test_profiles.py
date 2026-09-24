@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Tests for proteus.profiles — per-session compression profiles."""
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from proteus.profiles import (
-    get_profile, apply_profile, list_profiles,
-    detect_profile_from_config, PROFILES,
+    PROFILES,
+    apply_profile,
+    detect_profile_from_config,
+    get_profile,
+    list_profiles,
 )
 
 PASS = 0

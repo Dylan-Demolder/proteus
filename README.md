@@ -2,7 +2,19 @@
 
 **Shape-shifting compression for LLM tool outputs.**
 
+[![CI](https://github.com/Dylan-Demolder/proteus/actions/workflows/ci.yml/badge.svg)](https://github.com/Dylan-Demolder/proteus/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/proteus-compress?color=brightgreen&label=pypi&logo=pypi)](https://pypi.org/project/proteus-compress/)
+[![Python 3.10–3.14](https://img.shields.io/badge/python-3.10%E2%80%933.14-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Checked with ruff](https://img.shields.io/badge/lint-ruff-1F4E3B?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
+[![mypy](https://img.shields.io/badge/type%20check-mypy-2A6DB2?logo=mypy&logoColor=white)](https://mypy-lang.org/)
+[![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen.svg)](#tests)
+
 Proteus sits between your LLM agent and the API provider, compressing large tool outputs before they reach the model. Same answers, fraction of the tokens.
+
+![Proteus compressing a 38KB JSON file and restoring the original](docs/demo.gif)
+
+*Real run — `proteus file` on a 38KB JSON array, then `proteus retrieve` to restore the original byte-for-byte. Regenerate with `python benchmarks/make_demo_gif.py`.*
 
 ```
 Tool output (terminal, file read, search results)
@@ -20,10 +32,15 @@ Tool output (terminal, file read, search results)
 ## Quick start
 
 ```bash
-pip install git+https://github.com/Dylan-Demolder/proteus.git
+pip install proteus-compress
 ```
 
-> **Note:** The name `proteus` is taken on PyPI by an unrelated project. Install directly from GitHub.
+> **Note:** The distribution name is `proteus-compress` — `proteus` was already
+> taken on PyPI by an unrelated project. The import name and CLI are unchanged:
+> `import proteus` / `proteus proxy`.
+>
+> Not on PyPI yet? Install straight from GitHub:
+> `pip install git+https://github.com/Dylan-Demolder/proteus.git`
 
 ### Proxy mode (transparent, no code changes)
 
@@ -233,7 +250,7 @@ All compression is **reversible** — originals are never lost.
 - **Multi-turn history compression** (`history.py`): When a conversation exceeds threshold, old turns are compressed and originals stored in CCR — keeps the active window small without losing information.
 - **Per-session profiles** (`profiles.py`): Conservative (lossless), Balanced (default, <5% quality loss), Aggressive (max savings). `apply_profile()` merges into any config.
 - **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
-- **Dashboard integration**: When used with the Hermes dashboard (localhost:8080), a `/proteus` page shows cache stats, per-compressor breakdown, and profile selector.
+- **Integrations** (`integrations/`): Hook scripts for wiring Proteus into an existing agent — including a Hermes hook that wraps tool output for compression before it reaches the model.
 
 ## Why not HeadRoom?
 
@@ -260,8 +277,17 @@ git clone https://github.com/Dylan-Demolder/proteus.git
 cd proteus
 pip install -e ".[dev]"
 
-# Run all test suites (428 tests):
-for f in test/*.py; do python "$f"; done
+# Run all 8 test suites (428 tests) — same thing CI runs:
+for f in test/run_all.py test/test_*.py; do python "$f" || exit 1; done
+
+# Lint + type check (both are CI gates):
+ruff check src/ test/ benchmarks/
+mypy
+
+# Coverage (CI fails below 80%):
+coverage erase
+for f in test/run_all.py test/test_*.py; do coverage run --append "$f" >/dev/null; done
+coverage report
 
 # Run benchmarks:
 python test/benchmark_all.py
@@ -269,7 +295,7 @@ python test/benchmark_all.py
 
 Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests — **428 total**.
 
-Coverage: **68%** across 8 test suites.
+Coverage: **83%** across 8 test suites. CI fails the build below **80%**.
 
 ## Project structure
 
@@ -315,7 +341,9 @@ Apache 2.0.
 
 ## Status
 
-Alpha. Built for Hermes Agent but works with any LLM client that speaks OpenAI-compatible API. Proxy mode is functional but still has rough edges — expect improvements.
+Alpha. Works with any LLM client that speaks the OpenAI-compatible API — OpenRouter, OpenCode Go, OpenAI, Groq, or a custom endpoint via `--backend generic`. Originally built for [Hermes Agent](integrations/README.md), with a hook script shipped in `integrations/`.
+
+Proxy mode is functional but still has rough edges — expect improvements. See [CHANGELOG.md](CHANGELOG.md) for what's landed and [SECURITY.md](SECURITY.md) for the threat model (the CCR cache stores uncompressed tool output on disk — treat it as sensitive).
 
 ---
 
