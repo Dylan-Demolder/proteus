@@ -6,14 +6,13 @@ Also tests latency regression when run in CI.
 """
 
 import json
-import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from proteus import compress_tool_output, compress_summary_line
+from proteus import compress_tool_output
 from proteus.ccr import stats as ccr_stats
 
 
@@ -103,7 +102,7 @@ def main():
                 content = f.read_text()
                 if len(content) > 3000:
                     benchmark_file(f"Cache: {f.name}", content, source=str(f))
-            except (IOError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError):
                 pass
 
     print()

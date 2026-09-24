@@ -13,8 +13,6 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from .. import config
-
 # ── Search result patterns ──
 _SEARCH_LINE = re.compile(r"^([^:]+):(\d+):(.+)$")  # file:line:content
 _SEARCH_CONTEXT = re.compile(r"^([^:]+)-(\d+)-(.+)$")  # file-line-content (rg context)
@@ -71,7 +69,7 @@ def compress_search(
     current_file = "unknown"
 
     # Parse matches
-    for i, line in enumerate(lines):
+    for line in lines:
         if _SEARCH_SEP.match(line.strip()):
             continue
         m = _SEARCH_LINE.match(line)
@@ -100,15 +98,15 @@ def compress_search(
             file_matches[current_file].append((0, match_text, score))
             continue
 
-        if line.strip() and line.startswith("   ") or line.startswith("\t"):
+        is_context_line = (line.strip() and line.startswith("   ")) or line.startswith("\t")
+        if is_context_line and file_matches[current_file]:
             # Context line
-            if file_matches[current_file]:
-                last = file_matches[current_file][-1]
-                file_matches[current_file][-1] = (
-                    last[0],
-                    last[1] + "\n" + line.strip(),
-                    last[2],
-                )
+            last = file_matches[current_file][-1]
+            file_matches[current_file][-1] = (
+                last[0],
+                last[1] + "\n" + line.strip(),
+                last[2],
+            )
 
     stats["original_files"] = len(file_matches)
     stats["original_matches"] = sum(len(v) for v in file_matches.values())
@@ -117,7 +115,7 @@ def compress_search(
     file_scores = {
         f: sum(s for _, _, s in matches) for f, matches in file_matches.items()
     }
-    top_files = sorted(file_scores, key=file_scores.get, reverse=True)[:max_files]
+    top_files = sorted(file_scores, key=lambda f: file_scores[f], reverse=True)[:max_files]
 
     # Select matches per file
     result: list[str] = []

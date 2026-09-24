@@ -1,0 +1,65 @@
+name: 💡 Feature request
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proteus aims to stay **deterministic and dependency-light** — rule-based
+        compression only, no ML on the hot path. Features that fit that
+        constraint are the most likely to land.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: What are you trying to compress or accomplish that you can't today?
+      placeholder: "e.g. tool output from X format isn't detected by the router, so it passes through uncompressed."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Proteus do? Include sample input/output if you have it.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - New compressor
+        - ContentRouter / detection
+        - CCR cache
+        - Proxy server
+        - CLI
+        - History compression
+        - Profiles
+        - Documentation
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+      description: Workarounds, other tools, or doing nothing.
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: I understand this should stay deterministic (no ML/models on the hot path).
+        - label: I'm willing to open a PR for this.
+
+  - type: input
+    id: sample
+    attributes:
+      label: Sample input (optional)
+      description: A representative chunk of tool output, ideally >3K chars.
+      render: text

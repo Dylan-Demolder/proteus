@@ -8,17 +8,14 @@ Backends: openrouter, opencode-go, openai, generic
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import time
-from pathlib import Path
 
 import aiohttp
 from aiohttp import web
 
-from proteus.proxy.backends import Backend, get_backend, auto_detect_backend
+from proteus.proxy.backends import Backend, get_backend
 from proteus.proxy.handler import transform_request_body
 
 logger = logging.getLogger(__name__)
@@ -66,7 +63,7 @@ class ProteusProxy:
             self._session = aiohttp.ClientSession()
         return self._session
 
-    async def _forward_stream(self, resp: aiohttp.ClientResponse, request: web.Request | None = None) -> web.StreamResponse:
+    async def _forward_stream(self, resp: aiohttp.ClientResponse, request: web.BaseRequest) -> web.StreamResponse:
         """Forward an upstream SSE stream to the client."""
         response = web.StreamResponse(
             status=resp.status,
@@ -89,7 +86,7 @@ class ProteusProxy:
 
         return response
 
-    async def _process_and_forward(self, body: dict, request_headers, request: web.Request | None = None) -> web.Response:
+    async def _process_and_forward(self, body: dict, request_headers, request: web.Request | None = None) -> web.StreamResponse:
         """Core logic: compress body tool results and forward to upstream.
 
         Args:
@@ -98,7 +95,8 @@ class ProteusProxy:
             request: Original request (needed for streaming SSE responses).
 
         Returns:
-            A web.Response (JSON for non-streaming, StreamResponse for SSE).
+            A web.StreamResponse — web.Response (JSON) for non-streaming,
+            web.StreamResponse for SSE.
         """
         is_stream = body.get("stream", False)
 
@@ -106,10 +104,10 @@ class ProteusProxy:
         # responses can't be meaningfully batch-compressed in a proxy)
         if not is_stream:
             start = time.time()
-            mod_body, ccr_lookup, cstats = transform_request_body(body)
+            mod_body, _ccr_lookup, cstats = transform_request_body(body)
             transform_time = time.time() - start
         else:
-            mod_body, ccr_lookup = body, {}
+            mod_body = body
             cstats = {"compressed": 0, "total_saved": 0, "total_tokens_saved": 0}
             transform_time = 0.0
 
@@ -145,6 +143,16 @@ class ProteusProxy:
 
                 # Streaming: forward SSE events as-is
                 if is_stream or "text/event-stream" in resp.content_type:
+                    if request is None:
+                        # aiohttp needs the originating client request to
+                        # prepare a response on. Without one (direct calls to
+                        # _process_and_forward) we can't relay the SSE stream,
+                        # so fail loudly instead of raising TypeError inside
+                        # StreamResponse.prepare().
+                        return web.json_response(
+                            {"error": "streaming requires a client request"},
+                            status=500,
+                        )
                     return await self._forward_stream(resp, request)
 
                 # Non-streaming: parse JSON response
@@ -179,7 +187,7 @@ class ProteusProxy:
                 {"error": f"Upstream request failed: {str(e)}"}, status=502
             )
 
-    async def handle_chat_completions(self, request: web.Request) -> web.Response:
+    async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Handle POST /v1/chat/completions — compress + forward."""
         self._stats["requests_total"] += 1
 
@@ -304,11 +312,6 @@ def start_proxy(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
-
-    try:
-        resolved = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
-    except ValueError:
-        resolved = None
 
     app = create_app(
         backend=backend,

@@ -2,8 +2,8 @@
 """Tests for proteus.history — multi-turn history compression."""
 
 import json
-import sys
 import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))

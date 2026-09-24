@@ -7,8 +7,8 @@ Covers:
   4. History: system/assistant message helpers, list content, edge cases
 """
 
-import json
 import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -123,6 +123,7 @@ ccr.config.CCR_MAX_ENTRIES = _orig_max
 
 # Clean up
 import shutil
+
 shutil.rmtree(_tmpdir, ignore_errors=True)
 
 
@@ -132,9 +133,9 @@ shutil.rmtree(_tmpdir, ignore_errors=True)
 section("Handler — Tool Calls & User Messages")
 
 from proteus.proxy.handler import (
-    transform_request_body,
-    handle_tool_calls,
     _process_messages,
+    handle_tool_calls,
+    transform_request_body,
 )
 
 # Test handle_tool_calls — empty/invalid scenarios
@@ -233,7 +234,7 @@ section("Proxy Server — Integration Tests")
 
 # We patch the handler to avoid real upstream calls
 # Test app creation and route registration
-from proteus.proxy.server import create_app, ProteusProxy
+from proteus.proxy.server import ProteusProxy, create_app
 
 app = create_app(backend="openrouter")
 check("create_app returns web.Application", app is not None)
@@ -249,9 +250,10 @@ check("has /health route", any("/health" in p for p in route_paths))
 
 # Test with aiohttp TestClient
 try:
-    from aiohttp.test_utils import AioHTTPTestCase
-    from aiohttp import web
     import unittest
+
+    from aiohttp import web
+    from aiohttp.test_utils import AioHTTPTestCase
 
     class ProxyServerTest(unittest.IsolatedAsyncioTestCase):
         async def asyncSetUp(self):
@@ -352,11 +354,11 @@ except ImportError:
 section("History — Edge Cases")
 
 from proteus.history import (
-    compress_history,
-    _is_system_message,
-    _is_assistant_message,
     _count_message_chars,
     _extract_tool_content,
+    _is_assistant_message,
+    _is_system_message,
+    compress_history,
 )
 
 # Helpers
@@ -376,7 +378,7 @@ text_msg = {
 extracted = _extract_tool_content(text_msg)
 check("_extract_tool_content finds text type content", extracted and len(extracted) >= 100)
 
-# _extract_tool_content — no text/tool_result items  
+# _extract_tool_content — no text/tool_result items
 empty_list_msg = {"role": "user", "content": [{"type": "image", "url": "x.jpg"}]}
 check("_extract_tool_content no text items returns None", _extract_tool_content(empty_list_msg) is None)
 

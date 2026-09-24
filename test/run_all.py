@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Thorough test suite for Hermes Compression Engine.
+"""Thorough test suite for the Proteus compression engine.
 
 Tests every compressor with real-world data, measures savings,
 verifies reversibility, and flags any quality loss.
 """
-import json, sys, os
+import json
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from proteus import compress_tool_output, compress_summary_line
-from proteus.router import detect_content_type, ContentType, should_compress
-from proteus.ccr import retrieve, stats as ccr_stats, clear as ccr_clear
-from proteus.compressors.json_crusher import crush_json, compact_json
+from proteus import compress_summary_line, compress_tool_output
+from proteus.ccr import clear as ccr_clear
+from proteus.ccr import retrieve
+from proteus.ccr import stats as ccr_stats
+from proteus.compressors.code import compress_file_listing, strip_code
+from proteus.compressors.json_crusher import compact_json, crush_json
 from proteus.compressors.log_deduper import dedup_logs
-from proteus.compressors.code import strip_code, compress_file_listing
+from proteus.router import ContentType, detect_content_type, should_compress
 
 PASS = 0
 FAIL = 0
@@ -95,15 +99,15 @@ for i in range(500):
 big_content = json.dumps(big_mixed)
 compressed, stats = crush_json(big_content)
 if stats["mode"] == "row_drop":
-    check(f"Row drop: mode is row_drop", stats["mode"] == "row_drop")
-    check(f"Row drop: has hash marker", "hash=" in compressed)
-    check(f"Row drop: head rows shown", "item_0" in compressed)
-    check(f"Row drop: tail rows shown", "item_499" in compressed)
+    check("Row drop: mode is row_drop", stats["mode"] == "row_drop")
+    check("Row drop: has hash marker", "hash=" in compressed)
+    check("Row drop: head rows shown", "item_0" in compressed)
+    check("Row drop: tail rows shown", "item_499" in compressed)
 else:
     # Fallback: even columnar is a valid compression strategy
     check(f"Row fallback: mode is {stats['mode']}", stats["mode"] in ("columnar", "compact_array", "row_drop"))
-    check(f"Row fallback: savings achieved", stats.get("compressed_chars", 0) < 10000)
-    check(f"Row fallback: original chars", stats.get("original_chars", 0) > 10000)
+    check("Row fallback: savings achieved", stats.get("compressed_chars", 0) < 10000)
+    check("Row fallback: original chars", stats.get("original_chars", 0) > 10000)
 
 # 2d. CCR retrieval works
 ccr_clear()
@@ -160,7 +164,7 @@ check("Mixed logs: errors shown individually (each is unique)", "ERROR" in compr
 # 3d. Dedup with same error pattern repeated
 same_errors = ""
 for i in range(20):
-    same_errors += f"[ERROR] DB timeout after 30s\n"
+    same_errors += "[ERROR] DB timeout after 30s\n"
     same_errors += f"[INFO] Retry attempt {i}\n"
 compressed, stats = dedup_logs(same_errors)
 check("Same errors: dedup triggers", stats.get("repetitions_saved", 0) > 0)
@@ -320,12 +324,13 @@ print(f"{'='*60}")
 
 if FAIL == 0:
     print("\n  ✅ All tests pass. Engine is ready.")
+    print("\n  Token savings verified on real workloads:")
+    print("  - JSON arrays: 50-95% depending on size and repetitiveness")
+    print("  - Log output:  60-90% for repetitive errors")
+    print("  - File listings: 40-50% (permissions/owner stripped)")
+    print("  - Code files:  20-40% (comments/docstrings stripped)")
+    print("  - Reversibility: 100% (CCR hash → original)")
 else:
     print(f"\n  ❌ {FAIL} failures — fix before shipping.")
 
-print(f"\n  Token savings verified on real workloads:")
-print(f"  - JSON arrays: 50-95% depending on size and repetitiveness")
-print(f"  - Log output:  60-90% for repetitive errors")
-print(f"  - File listings: 40-50% (permissions/owner stripped)")
-print(f"  - Code files:  20-40% (comments/docstrings stripped)")
-print(f"  - Reversibility: 100% (CCR hash → original)")
+sys.exit(1 if FAIL else 0)

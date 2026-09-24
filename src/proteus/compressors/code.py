@@ -8,8 +8,8 @@ FileLister — compact ls -la output (lossless).
 """
 
 import re
-from .. import config
 
+from .. import config
 
 # ── Python comment/docstring patterns ──
 _PY_STRING_START = re.compile(r"^(\s*)(\"\"\"|''')")

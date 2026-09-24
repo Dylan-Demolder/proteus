@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📚 Documentation
+    url: https://github.com/Dylan-Demolder/proteus#readme
+    about: Check the README for quick start, CLI reference, and benchmarks first.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/Dylan-Demolder/proteus/security/advisories/new
+    about: Report security issues privately — please don't open a public issue.

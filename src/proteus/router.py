@@ -66,12 +66,6 @@ def detect_content_type(content: str) -> ContentType:
         return ContentType.TEXT
 
     first_lines = content.split("\n")[:20]
-    first_nonempty = ""
-    for line in first_lines:
-        stripped = line.strip()
-        if stripped:
-            first_nonempty = stripped
-            break
 
     # 1. Try JSON parse
     try:

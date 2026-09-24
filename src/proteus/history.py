@@ -80,7 +80,7 @@ def compress_history(
             - entries: list of {turn_index, hash, original_size, compressed_size}
     """
     total_chars = _count_message_chars(messages)
-    stats = {
+    stats: dict[str, Any] = {
         "total_chars": total_chars,
         "compressed_count": 0,
         "chars_saved": 0,

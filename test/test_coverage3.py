@@ -32,8 +32,9 @@ def section(s: str):
 # =============================================================================
 section("_process_and_forward — All Branches")
 
-from proteus.proxy.server import ProteusProxy
 import aiohttp
+
+from proteus.proxy.server import ProteusProxy
 
 
 async def _test_successful_no_compression():
@@ -117,7 +118,8 @@ async def _test_upstream_client_error():
 
 async def _test_log_writing():
     """Log file written on successful forward."""
-    import tempfile, os
+    import os
+    import tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         log_path = f.name
 
@@ -135,7 +137,7 @@ async def _test_log_writing():
     proxy._session = mock_session
 
     body = {"model": "test", "messages": []}
-    response = await proxy._process_and_forward(body, {})
+    await proxy._process_and_forward(body, {})
 
     with open(log_path) as f:
         log_entry = json.loads(f.read())
@@ -188,6 +190,7 @@ async def _test_session_lazy_init():
 # Run async tests
 import asyncio
 
+
 async def run_tests():
     await _test_successful_no_compression()
     await _test_header_passthrough()
@@ -205,6 +208,7 @@ asyncio.run(run_tests())
 section("CLI — Click Integration Tests")
 
 from click.testing import CliRunner
+
 from proteus.cli.commands import cli
 
 runner = CliRunner()
@@ -225,6 +229,7 @@ check("proteus retrieve runs without crash", result3.exit_code in (1, 2))
 
 # Test `proteus file` with a temp file
 import tempfile
+
 with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:
     f.write("""def hello():
     \"\"\"Docstring.\"\"\"
@@ -238,6 +243,7 @@ result4 = runner.invoke(cli, ["file", f_path])
 check("proteus file runs", result4.exit_code == 0)
 check("proteus file shows output", len(result4.output) > 0)
 import os
+
 os.unlink(f_path)
 
 # Test `proteus proxy --help`
@@ -344,7 +350,7 @@ auto_compress_script = """#!/usr/bin/env python3
 
 Usage:
     python auto_compress.py <file_path>
-    
+
 Reads a file, compresses it via Proteus, and writes the compressed
 version alongside. Use for pre-compressing large cache files.
 \"\"\"
@@ -356,15 +362,15 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: auto_compress.py <path>")
         sys.exit(1)
-    
+
     path = Path(sys.argv[1])
     if not path.exists():
         print(f"File not found: {path}")
         sys.exit(1)
-    
+
     content = path.read_text()
     compressed, stats = compress_tool_output(content)
-    
+
     if stats.get("was_compressed"):
         out_path = path.with_suffix(path.suffix + ".compressed")
         out_path.write_text(compressed)
@@ -385,6 +391,7 @@ check("auto_compress.py created", script_path.exists())
 
 # Test it runs without error
 import subprocess
+
 result = subprocess.run(
     [sys.executable, str(script_path), "--help"],
     capture_output=True, text=True, timeout=10
@@ -397,7 +404,7 @@ readme = """# Proteus Integration Scripts
 ## auto_compress.py
 Pre-compresses files for use with Proteus::
     python auto_compress.py <path>
-    
+
 Creates a `.compressed` companion file. The original is left untouched.
 
 ## Hermes Hook Integration

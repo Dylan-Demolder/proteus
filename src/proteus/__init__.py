@@ -1,4 +1,4 @@
-"""Proteus — inline compression layer for Hermes tool outputs.
+"""Proteus — inline compression layer for LLM tool outputs.
 
 Compresses large tool outputs before they enter the LLM context,
 saving 40-60% of tokens with guaranteed reversibility (CCR cache).
@@ -18,14 +18,27 @@ Usage:
     config = apply_profile(base_config, "aggressive")
 """
 
-from . import config
-from .router import detect_content_type, should_compress, ContentType
+from . import ccr, config, history, profiles
+from .compressors.code import compress_file_listing, strip_code
 from .compressors.json_crusher import crush_json
 from .compressors.log_deduper import dedup_logs
-from .compressors.code import strip_code, compress_file_listing
-from . import ccr
-from . import history
-from . import profiles
+from .router import ContentType, detect_content_type, should_compress
+
+__all__ = [
+    "ccr",
+    "compress_summary_line",
+    "compress_tool_output",
+    "config",
+    "compress_file_listing",
+    "ContentType",
+    "crush_json",
+    "dedup_logs",
+    "detect_content_type",
+    "history",
+    "profiles",
+    "should_compress",
+    "strip_code",
+]
 
 
 def compress_tool_output(
@@ -62,6 +75,13 @@ def compress_tool_output(
         "content_type": "unknown",
         "original_chars": len(content),
         "was_compressed": False,
+        # Always present so callers can format results without guarding on
+        # was_compressed first (the README example relies on this).
+        "compressed_chars": len(content),
+        "compression_pct": 0.0,
+        "estimated_token_savings": 0,
+        "chars_saved": 0,
+        "hash": "",
     }
 
     if not should_compress(content):
@@ -121,9 +141,19 @@ def compress_tool_output(
         compressed, compressor_stats = summarize_text(content)
         compressor = "text"
 
-    # Store in CCR cache if compression actually reduced size
+    # Store in CCR cache if compression actually reduced size.
     content_hash = ""
-    if compressor is not None and len(compressed) < len(content):
+    if compressor is None or len(compressed) >= len(content):
+        # Compression didn't pay off — the compressor either left the input
+        # alone or produced something LARGER (misdetected content type, or an
+        # input with no redundancy to exploit).
+        #
+        # Discard the compressor's output and return the original untouched.
+        # Otherwise we'd hand back a mutated payload with no hash stored,
+        # which is unrecoverable and breaks the reversibility guarantee:
+        # callers see was_compressed=False but the bytes still changed.
+        compressed = content
+    else:
         stats["was_compressed"] = True
         stats["compressed_chars"] = len(compressed)
         stats["compressor"] = compressor

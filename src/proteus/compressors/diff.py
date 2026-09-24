@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import re
 
-from .. import config
-
 # ── Diff patterns ──
 _DIFF_FILE = re.compile(r"^diff --git a/(.+) b/(.+)$")
 _DIFF_HUNK = re.compile(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@(.+)$")
@@ -52,8 +50,6 @@ def compress_diff(
 
     in_hunk = False
     context_count = 0
-    hunk_count = 0
-    current_file = ""
     hunks_for_file = 0
     skip_file = False
     additions = 0
@@ -67,7 +63,6 @@ def compress_diff(
                 pass
             file_count += 1
             skip_file = file_count > max_files
-            current_file = dm.group(2)
             hunks_for_file = 0
             additions = 0
             deletions = 0

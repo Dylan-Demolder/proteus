@@ -6,12 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+env:
+  # Every suite in test/ is a flat script with a check() counter. They are run
+  # as subprocesses so a failing suite returns non-zero and fails the job.
+  SUITES: >-
+    test/run_all.py
+    test/test_new.py
+    test/test_cli.py
+    test/test_coverage.py
+    test/test_coverage2.py
+    test/test_coverage3.py
+    test/test_history.py
+    test/test_profiles.py
+
 jobs:
   test:
+    name: Test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,34 +44,80 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run existing tests
-        run: python test/run_all.py
-
-      - name: Run new tests
-        run: python test/test_new.py
+      - name: Run all test suites
+        # Run every suite even if one fails, so the log shows all failures
+        # at once instead of stopping at the first.
+        run: |
+          failed=0
+          for suite in $SUITES; do
+            echo "::group::$suite"
+            if ! python "$suite"; then
+              echo "::error file=$suite::$suite reported failures"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more test suites failed"
+            exit 1
+          fi
+          echo "All suites passed."
 
   lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff mypy "aiohttp>=3.9" "pyyaml>=6.0" "click>=8.0"
+      - name: Ruff
+        run: ruff check src/ test/ benchmarks/
+      - name: Mypy
+        run: mypy src/proteus/
       - name: Syntax check
-        run: python -m compileall src/proteus/ test/
+        run: |
+          pip install -e ".[dev]"
+          python -m compileall -q src/proteus/ test/
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" coverage
+      - name: Run suites under coverage
+        run: |
+          coverage erase
+          for suite in $SUITES; do
+            coverage run --append "$suite" > /dev/null
+          done
+      - name: Report (fails under fail_under in pyproject.toml)
+        run: coverage report --show-missing
 
   benchmark:
+    name: Benchmark
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install
-        run: pip install -e ".[dev]"
-      - name: Run benchmarks
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Compression benchmarks
         run: python benchmarks/run_benchmarks.py
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      - name: 48-scenario suite
+        run: python test/benchmark_all.py

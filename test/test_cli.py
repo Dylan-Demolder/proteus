@@ -34,6 +34,7 @@ def section(s: str):
 section("CLI — Group & Help")
 
 from click.testing import CliRunner
+
 from proteus.cli.commands import cli
 
 runner = CliRunner()
@@ -70,7 +71,8 @@ check("clear shows cleared", "Cleared" in result2.output or "cleared" in result2
 section("CLI — Retrieve")
 
 # Test retrieve function directly instead of through CliRunner
-from proteus.ccr import retrieve as ccr_retrieve, store
+from proteus.ccr import retrieve as ccr_retrieve
+from proteus.ccr import store
 
 h = store("original content for cli test", "compressed version", "text", {"original_lines": 1, "compressed_lines": 1})
 retrieved = ccr_retrieve(h)
@@ -115,7 +117,8 @@ os.unlink(small_path)
 section("CLI — Cache Command")
 
 # Test the cache function directly (CliRunner has issues with subcommand args)
-from proteus.ccr import clear as ccr_clear, stats as ccr_stats
+from proteus.ccr import clear as ccr_clear
+from proteus.ccr import stats as ccr_stats
 
 # Write a test log file, then use direct function
 with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
@@ -124,6 +127,7 @@ with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
 
 # Compress using the direct API
 from proteus import compress_tool_output
+
 content = Path(log_path).read_text()
 compressed, cstats = compress_tool_output(content)
 check("cache via API runs", cstats.get("was_compressed", False))
