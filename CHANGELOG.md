@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-09-24
 
-First release published to PyPI as `proteus-compress`.
+Distribution renamed to `proteus-compress` in preparation for PyPI.
+**Not yet published** — install from GitHub (see the README quick start);
+the `publish.yml` workflow and the `v0.2.0` tag are ready for when it is.
 
 ### Added
 
