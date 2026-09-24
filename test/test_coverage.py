@@ -253,11 +253,32 @@ try:
     import unittest
 
     from aiohttp import web
-    from aiohttp.test_utils import AioHTTPTestCase
 
     class ProxyServerTest(unittest.IsolatedAsyncioTestCase):
         async def asyncSetUp(self):
-            self.app = create_app(backend="openrouter")
+            # Local stand-in for the upstream API.
+            #
+            # These tests used to call the real openrouter.ai, which made CI
+            # depend on a third party's uptime and status codes — commit
+            # 2d8dbfb had to weaken the assertions to "non-2xx"/"non-5xx"
+            # precisely because the live upstream's answers kept moving.
+            # A local mock lets us assert exact status codes and relayed
+            # bodies, with zero network egress.
+            self.mock_app = web.Application()
+            self.mock_app.router.add_post("/v1/chat/completions", self._mock_chat)
+            self.mock_app.router.add_get("/v1/models", self._mock_models)
+            self.mock_app.router.add_get("/v1/unauthorized", self._mock_unauthorized)
+            self.mock_runner = web.AppRunner(self.mock_app)
+            await self.mock_runner.setup()
+            self.mock_site = web.TCPSite(self.mock_runner, "127.0.0.1", 0)
+            await self.mock_site.start()
+            mock_port = self.mock_site._server.sockets[0].getsockname()[1]
+
+            self.app = create_app(
+                backend="generic",
+                upstream_url=f"http://127.0.0.1:{mock_port}/v1",
+                api_key_env="PROTEUS_TEST_KEY",
+            )
             self.runner = web.AppRunner(self.app)
             await self.runner.setup()
             self.site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -269,6 +290,31 @@ try:
 
         async def asyncTearDown(self):
             await self.runner.cleanup()
+            await self.mock_runner.cleanup()
+
+        # ── Mock upstream handlers ─────────────────────────────────────
+
+        async def _mock_chat(self, request: web.Request) -> web.Response:
+            """Echo back what the proxy actually forwarded."""
+            body = await request.json()
+            return web.json_response({
+                "id": "mock-chat-1",
+                "object": "chat.completion",
+                "model": body.get("model", ""),
+                "received_messages": body.get("messages", []),
+                "received_authorization": request.headers.get("Authorization", ""),
+            })
+
+        async def _mock_models(self, request: web.Request) -> web.Response:
+            return web.json_response({"object": "list", "data": [{"id": "mock/model"}]})
+
+        async def _mock_unauthorized(self, request: web.Request) -> web.Response:
+            return web.json_response(
+                {"error": {"message": "No API key provided", "code": 401}},
+                status=401,
+            )
+
+        # ── Tests ──────────────────────────────────────────────────────
 
         async def test_livez(self):
             import aiohttp
@@ -306,14 +352,15 @@ try:
                     self.assertIn("error", data)
 
         async def test_chat_completions_small_body(self):
-            """Small body — should pass through without compression."""
+            """Small body passes through unmodified and the reply is relayed."""
             import aiohttp
+            messages = [
+                {"role": "user", "content": "Hello! How are you?"},
+                {"role": "assistant", "content": "I'm fine, thanks!"},
+            ]
             body = json.dumps({
                 "model": "deepseek/deepseek-chat",
-                "messages": [
-                    {"role": "user", "content": "Hello! How are you?"},
-                    {"role": "assistant", "content": "I'm fine, thanks!"},
-                ],
+                "messages": messages,
             })
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -321,20 +368,42 @@ try:
                     data=body,
                     headers={"Content-Type": "application/json"},
                 ) as resp:
-                    # Request processed by proxy — upstream returns 401 (no API key)
-                    # Accept any client/upstream error (4xx) or server error (502)
-                    self.assertFalse(resp.status >= 200 and resp.status < 300,
-                        f"Expected non-2xx status, got {resp.status}")
+                    # Exact code, not a range: the upstream is local, so a
+                    # failure here is our bug rather than someone else's outage.
+                    self.assertEqual(resp.status, 200)
+                    data = await resp.json()
+
+            # The proxy must forward the body verbatim (input is below the
+            # 3000-char compression threshold) and relay the reply.
+            self.assertEqual(data["id"], "mock-chat-1")
+            self.assertEqual(data["received_messages"], messages)
+            self.assertEqual(data["model"], "deepseek/deepseek-chat")
 
         async def test_unknown_route(self):
-            """Unknown route should get forwarded to upstream."""
+            """Unknown routes are forwarded to the upstream and relayed back."""
             import aiohttp
             async with aiohttp.ClientSession() as session:
                 async with session.get(f"{self.base}/models") as resp:
-                    # Upstream returns 200 for /models endpoint (OpenAI-compatible)
-                    # The proxy forwards requests to upstream — response depends on upstream
-                    self.assertFalse(resp.status >= 500,
-                        f"Expected non-5xx status, got {resp.status}")
+                    self.assertEqual(resp.status, 200)
+                    data = await resp.json()
+
+            self.assertEqual(data["object"], "list")
+            self.assertEqual(data["data"][0]["id"], "mock/model")
+
+        async def test_upstream_error_is_relayed(self):
+            """A 4xx from upstream reaches the client as 4xx, not 502."""
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.base}/unauthorized") as resp:
+                    self.assertEqual(resp.status, 401)
+                    data = await resp.json()
+
+            self.assertIn("No API key provided", data["error"]["message"])
+
+        async def test_no_live_network_calls(self):
+            """The proxy's upstream must be the local mock, not a real host."""
+            self.assertIn("127.0.0.1", self.app["proxy"].upstream_url)
+            self.assertTrue(self.app["proxy"].upstream_url.startswith("http://127.0.0.1:"))
 
     # Run tests
     suite = unittest.TestLoader().loadTestsFromTestCase(ProxyServerTest)
