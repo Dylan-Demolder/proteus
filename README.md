@@ -285,7 +285,7 @@ All compression is **reversible** — originals are never lost.
 ## Key features
 
 - **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker such as `[proteus: compressed 31,432→8,358 chars. For the full original call proteus_retrieve(hash="9c10f175bc4b")]`. When the model calls `proteus_retrieve` (optionally with a `query` to get only matching lines), the proxy answers from the local cache and asks the model again. Your agent never sees the tool, so it needs no changes. This needs a complete response to inspect, so it applies to non-streaming requests. Streaming requests are still compressed, and their marker records the cache hash (`proteus retrieve <hash>`).
-- **Multi-turn history compression** (`history.py`): When a conversation exceeds threshold, old turns are compressed and originals stored in CCR — keeps the active window small without losing information.
+- **Multi-turn history compression** (`history.py`): When a conversation exceeds a threshold, tool results from older turns (OpenAI `role: "tool"` messages, `tool_result`/`text` parts, large user messages) are replaced by their compressed form plus a `proteus_retrieve` marker, and the originals are stored in CCR. It returns a new list, leaves your messages untouched, and is safe to call every turn.
 - **Compression profiles** (`profiles.py`): Conservative (least lossy: no row-dropping or text summarization), Balanced (default), Aggressive (max savings). Activate with `--profile` or `use_profile()`; see [Configuration](#configuration).
 - **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
 - **Integrations** (`integrations/`): Hook scripts for wiring Proteus into an existing agent — including a Hermes hook that wraps tool output for compression before it reaches the model.
@@ -315,7 +315,7 @@ git clone https://github.com/Dylan-Demolder/proteus.git
 cd proteus
 pip install -e ".[dev]"
 
-# Run all 10 test suites (558 tests) — same thing CI runs:
+# Run all 10 test suites (571 tests) — same thing CI runs:
 for f in test/run_all.py test/test_*.py; do python "$f" || exit 1; done
 
 # Lint + type check (both are CI gates):
@@ -331,7 +331,7 @@ coverage report
 python test/benchmark_all.py
 ```
 
-Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 90 proxy & fidelity tests, 40 config tests — **558 total**.
+Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 34 history tests, 91 profiles tests, 90 proxy & fidelity tests, 40 config tests — **571 total**.
 
 Coverage: **89%** across 10 test suites. CI fails the build below **80%**.
 
@@ -353,7 +353,7 @@ proteus/
 │   ├── history.py             # Multi-turn conversation compression
 │   ├── profiles.py            # Per-session compression profiles
 │   └── cli/                   # CLI commands
-├── test/                      # 558 tests
+├── test/                      # 571 tests
 ├── benchmarks/                # CI benchmarks
 ├── demos/
 │   ├── weather-dashboard/     # 🌤 HTML/CSS/JS weather app demo

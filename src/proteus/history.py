@@ -7,6 +7,7 @@ are stored in CCR cache and can be retrieved via proteus_retrieve.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -52,32 +53,78 @@ def _extract_tool_content(msg: dict) -> str | None:
     return None
 
 
+# Roles whose content is a tool's output in the OpenAI chat format.
+_TOOL_ROLES = ("tool", "function")
+
+# Already-compressed content carries one of these markers (history's own, or
+# the proxy's). Re-compressing it on every turn would stack markers and
+# summarise summaries.
+_MARKER = re.compile(r"\[[Pp]roteus: ")
+
+
+def _retrieve_call_ids(messages: list[dict]) -> set[str]:
+    """IDs of proteus_retrieve calls: their results are originals the model asked for."""
+    ids: set[str] = set()
+    for msg in messages:
+        for tc in msg.get("tool_calls") or []:
+            function = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(function, dict) and function.get("name") == "proteus_retrieve":
+                ids.add(tc.get("id", ""))
+    return ids
+
+
+def _compress_text(text: str, turn: int) -> tuple[str, dict] | None:
+    """Compress one old tool output; None if it isn't worth it or was done already."""
+    if len(text) < 100 or _MARKER.search(text):
+        return None
+    from proteus import compress_tool_output
+
+    compressed, cstats = compress_tool_output(text)
+    if not cstats.get("was_compressed", False):
+        return None
+    marker = (
+        f"\n[Proteus: tool result from turn {turn} compressed "
+        f"({cstats.get('compression_pct', 0):.0f}% smaller). "
+        f'Full original: proteus_retrieve(hash="{cstats["hash"]}")]'
+    )
+    replacement = compressed + marker
+    if len(replacement) >= len(text):
+        return None
+    return replacement, cstats
+
+
 def compress_history(
     messages: list[dict],
     threshold_chars: int = 50000,
     keep_recent: int = 10,
 ) -> tuple[list[dict], dict[str, Any]]:
-    """Compress older tool-result messages when history exceeds threshold.
+    """Compress older tool results when a conversation exceeds a size threshold.
 
-    Scans the message list. If total content exceeds threshold_chars,
-    compresses tool results in messages older than the keep_recent most
-    recent user/assistant turns. System messages and assistant replies
-    are never compressed.
+    If total content exceeds threshold_chars, tool results that come before
+    the keep_recent most recent user/assistant messages are compressed in
+    place of the original: the compressed text plus a marker naming the CCR
+    hash of the full original. Handled forms: OpenAI ``role: "tool"``
+    messages, ``tool_result`` and ``text`` parts in a content list, and large
+    plain-text user messages. System and assistant messages are never
+    compressed, nor are results of proteus_retrieve calls, nor content that
+    is already compressed (so calling this every turn is safe).
+
+    The input list and its messages are not modified.
 
     Args:
         messages: Full conversation message list.
         threshold_chars: Total chars that trigger compression (default 50K).
-        keep_recent: Number of recent user/assistant turns to preserve (default 10).
+        keep_recent: Number of recent user/assistant messages to leave untouched (default 10).
 
     Returns:
-        (modified_messages, stats_dict)
+        (new_messages, stats_dict)
         stats contains:
             - total_chars: original total char count
             - compressed_count: number of tool results compressed
             - chars_saved: total chars saved
             - tokens_saved_estimate: estimated tokens saved
             - threshold_triggered: whether compression threshold was exceeded
-            - entries: list of {turn_index, hash, original_size, compressed_size}
+            - entries: list of {turn_index, hash, original_size, compressed_size, savings_pct}
     """
     total_chars = _count_message_chars(messages)
     stats: dict[str, Any] = {
@@ -92,75 +139,65 @@ def compress_history(
     if not stats["threshold_triggered"]:
         return messages, stats
 
-    # Identify user/assistant turns (each exchange)
-    turn_indices: list[int] = []
-    for i, msg in enumerate(messages):
+    # Everything before the first of the keep_recent most recent
+    # user/assistant messages is "old".
+    turn_indices = [i for i, m in enumerate(messages) if m.get("role") in ("user", "assistant")]
+    if keep_recent <= 0:
+        cutoff = len(messages)
+    elif len(turn_indices) > keep_recent:
+        cutoff = turn_indices[-keep_recent]
+    else:
+        cutoff = 0
+
+    skip_ids = _retrieve_call_ids(messages)
+    result = list(messages)
+
+    def record(i: int, original: str, replacement: str, cstats: dict) -> None:
+        saved = len(original) - len(replacement)
+        stats["compressed_count"] += 1
+        stats["chars_saved"] += saved
+        stats["tokens_saved_estimate"] += saved // 4
+        stats["entries"].append({
+            "turn_index": i,
+            "hash": cstats["hash"],
+            "original_size": len(original),
+            "compressed_size": len(replacement),
+            "savings_pct": cstats.get("compression_pct", 0),
+        })
+
+    for i in range(cutoff):
+        msg = messages[i]
         role = msg.get("role", "")
-        if role in ("user", "assistant"):
-            turn_indices.append(i)
-
-    # Determine which turns are "old" (beyond keep_recent)
-    recent_cutoff = max(0, len(turn_indices) - keep_recent)
-    old_turn_indices = set(turn_indices[:recent_cutoff])
-
-    modified = list(messages)
-
-    for i in old_turn_indices:
-        msg = modified[i]
-        role = msg.get("role", "")
-
-        # Skip system and assistant messages entirely
-        if role in ("system", "assistant"):
+        if role not in _TOOL_ROLES and role != "user":
             continue
-
-        # Try to extract and compress tool content
-        tool_content = _extract_tool_content(msg)
-        if tool_content is None:
+        if role in _TOOL_ROLES and msg.get("tool_call_id") in skip_ids:
             continue
-
-        from proteus import compress_tool_output
-        compressed, cstats = compress_tool_output(tool_content)
-        if not cstats.get("was_compressed", False):
-            continue
-
-        content_hash = cstats.get("hash", "")
-        chars_saved = cstats.get("chars_saved", len(tool_content) - len(compressed))
-        compression_pct = cstats.get("compression_pct", 0)
-
-        # Replace content with compressed marker
-        summary = (
-            f"[Proteus: tool result from turn {i} compressed "
-            f"({compression_pct:.0f}% savings). "
-            f"Use proteus_retrieve(hash={content_hash}) for original content.]"
-        )
 
         content = msg.get("content", "")
         if isinstance(content, str):
-            msg["content"] = summary
-            msg["_proteus_compressed"] = True
-            msg["_proteus_hash"] = content_hash
+            done = _compress_text(content, i)
+            if done:
+                result[i] = {**msg, "content": done[0]}
+                record(i, content, *done)
         elif isinstance(content, list):
-            for item in content:
-                if isinstance(item, dict):
-                    item_type = item.get("type", "")
-                    if item_type == "tool_result" and item.get("content", "") == tool_content:
-                        item["content"] = summary
-                        item["_proteus_compressed"] = True
-                        item["_proteus_hash"] = content_hash
-                    elif item_type == "text" and item.get("text", "") == tool_content:
-                        item["text"] = summary
-                        item["_proteus_compressed"] = True
-                        item["_proteus_hash"] = content_hash
+            new_parts = []
+            changed = False
+            for part in content:
+                key = None
+                if isinstance(part, dict) and part.get("type") == "tool_result":
+                    key = "content"
+                elif isinstance(part, dict) and part.get("type") == "text":
+                    key = "text"
+                text = part.get(key) if key else None
+                if key and isinstance(text, str):
+                    done = _compress_text(text, i)
+                    if done:
+                        new_parts.append({**part, key: done[0]})
+                        record(i, text, *done)
+                        changed = True
+                        continue
+                new_parts.append(part)
+            if changed:
+                result[i] = {**msg, "content": new_parts}
 
-        stats["compressed_count"] += 1
-        stats["chars_saved"] += chars_saved
-        stats["tokens_saved_estimate"] += chars_saved // 4
-        stats["entries"].append({
-            "turn_index": i,
-            "hash": content_hash,
-            "original_size": len(tool_content),
-            "compressed_size": len(summary),
-            "savings_pct": compression_pct,
-        })
-
-    return modified, stats
+    return result, stats

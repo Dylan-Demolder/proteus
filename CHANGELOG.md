@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   make one live. The README called `conservative` "lossless"; it isn't (logs
   are still deduplicated, grep output is still capped), so it now says
   "least lossy".
+- **`compress_history()` skipped OpenAI tool results and threw away old
+  ones.** It only considered user and assistant messages, so
+  `{"role": "tool"}` messages were never compressed. What it did compress was
+  replaced by a bare "[Proteus: … compressed]" marker, discarding the
+  compressed content too, despite the README's "without losing information".
+  It also modified the caller's messages in place and added private
+  `_proteus_*` keys that strict APIs reject. It now compresses tool messages,
+  keeps the compressed content plus a retrieve marker, returns new message
+  objects, adds no private keys, and skips content that is already compressed
+  or answers a `proteus_retrieve` call, so it is safe to run on every turn.
 - The proxy used a hard-coded 3,000-char threshold instead of
   `config.MIN_COMPRESS_CHARS`, so profiles couldn't change it.
 - The search and diff limits were hard-coded function defaults, even though
