@@ -5,6 +5,65 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The proxy now compresses standard OpenAI tool results.** It only looked
+  for `{"type": "tool_result"}` blocks, which the OpenAI chat format doesn't
+  use. `{"role": "tool", "content": ...}` messages, which is how every
+  OpenAI-compatible agent sends tool output, went upstream untouched. Both
+  string content and lists of text parts are now compressed.
+- **The proxy now compresses streaming requests.** Compression was skipped
+  whenever `stream: true`. Most agents stream, so for them the proxy did
+  nothing. Compression applies to the request, so whether the response streams
+  is irrelevant.
+- **`proteus_retrieve` works.** The proxy offered the model this tool but never
+  answered calls to it, so the agent received a call to a tool it didn't
+  define. Compressed output also carried no hash to pass it. Compressed tool
+  results now end with a marker naming the hash. For non-streaming requests,
+  the proxy answers the model's retrieve calls from the cache and asks again,
+  so the client never sees the tool, and token usage is summed across rounds.
+  Streaming requests don't get the tool, because the proxy can't intercept a
+  stream. The optional `query` argument (filter to matching lines) is now
+  implemented.
+- **The code compressor no longer deletes code.** In JS/TS/Go/Rust, a line
+  with an inline `/* comment */` made every following line disappear up to the
+  next `*/`. So did a string containing `/*`, such as the glob
+  `"src/**/*.ts"`. In Python, any line starting with `"""`, for example SQL in
+  a triple-quoted string, was dropped as a "docstring", along with `#` lines
+  inside strings. The strippers now track string literals (Python uses the
+  tokenizer), keep build directives (`//go:build`, `/// <reference>`), and
+  replace a docstring that is a block's only statement with `...` so the code
+  still compiles.
+- **Columnar JSON is lossless, as documented.** Values were written with
+  `str()`, which produced Python reprs (`True`, `{'x': 1}`), broke rows on
+  embedded newlines and quotes, and couldn't tell `null` from `""`. Cells are
+  now bare strings or JSON, and the format decodes back to exactly the input.
+- **JSON arrays of strings or numbers crashed** with `AttributeError` (for
+  example, a list of file paths).
+- **Row-drop `hash=` markers pointed at nothing.** The hash was computed from
+  re-serialized JSON rather than the input text, so `retrieve()` missed
+  whenever the input was pretty-printed.
+- **`ccr.retrieve()` followed path traversal.** A hash like `../x` read a file
+  outside the cache directory, and the model now supplies hashes. Only hex
+  hashes are accepted. Cache entries are also written atomically.
+- **Proxy pass-through doubled `/v1`.** `GET /v1/models` was forwarded as
+  `.../v1/v1/models`. Content-Type is now forwarded on pass-through requests.
+- **Non-JSON upstream errors** (an HTML 502 page, a plain-text 429) are relayed
+  with their status instead of being replaced by a generic 502. Errors on
+  streaming requests are relayed as JSON instead of being labelled SSE.
+- **Long responses were cut off after 120s.** The timeout now bounds connect
+  time and time between bytes, not total duration. Timeouts return 504.
+- The proxy's upstream connection pool is closed on shutdown ("Unclosed client
+  session" warning).
+
+### Added
+
+- `test/test_proxy_fidelity.py`: 68 regression tests covering the above,
+  including end-to-end proxy tests against a local mock upstream. Each one was
+  confirmed to fail on the previous code.
+
 ## [0.2.0] - 2026-09-24
 
 Distribution renamed to `proteus-compress` in preparation for PyPI.

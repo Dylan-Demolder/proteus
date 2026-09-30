@@ -21,6 +21,7 @@ env:
     test/test_coverage3.py
     test/test_history.py
     test/test_profiles.py
+    test/test_proxy_fidelity.py
 
 jobs:
   test:
