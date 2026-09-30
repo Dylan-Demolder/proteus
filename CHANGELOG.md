@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--config` did nothing.** `proteus proxy --config file.yaml` printed the
+  path and never read the file. `pyyaml` was a dependency nothing imported,
+  and `config.yaml` claimed it was hot-reloadable. The file is now loaded and
+  validated: unknown keys and wrong types are errors naming the key. Its
+  `proxy:` section supplies host, port and backend defaults, and the proxy
+  re-reads compression settings when the file changes, keeping the previous
+  settings if an edit is invalid. `proteus file` accepts `--config` too.
+- **Profiles did nothing.** `get_profile()` and `apply_profile()` return
+  dicts that no compressor reads. New `use_profile(name)`, `--profile` on
+  `proteus proxy` and `proteus file`, and a `profile:` key in config files
+  make one live. The README called `conservative` "lossless"; it isn't (logs
+  are still deduplicated, grep output is still capped), so it now says
+  "least lossy".
+- **`compress_history()` skipped OpenAI tool results and threw away old
+  ones.** It only considered user and assistant messages, so
+  `{"role": "tool"}` messages were never compressed. What it did compress was
+  replaced by a bare "[Proteus: … compressed]" marker, discarding the
+  compressed content too, despite the README's "without losing information".
+  It also modified the caller's messages in place and added private
+  `_proteus_*` keys that strict APIs reject. It now compresses tool messages,
+  keeps the compressed content plus a retrieve marker, returns new message
+  objects, adds no private keys, and skips content that is already compressed
+  or answers a `proteus_retrieve` call, so it is safe to run on every turn.
+- The proxy used a hard-coded 3,000-char threshold instead of
+  `config.MIN_COMPRESS_CHARS`, so profiles couldn't change it.
+- The search and diff limits were hard-coded function defaults, even though
+  `config.yaml` listed them. They are now settings (`SEARCH_*`, `DIFF_*`).
+
 - **The proxy now compresses standard OpenAI tool results.** It only looked
   for `{"type": "tool_result"}` blocks, which the OpenAI chat format doesn't
   use. `{"role": "tool", "content": ...}` messages, which is how every
@@ -94,6 +122,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `proteus.config.configure()`, `update()`, `reset()`, `current()` and
+  `DEFAULTS`; `proteus.profiles.use_profile()`.
+- `test/test_config.py` (40 tests).
+- `benchmarks/live_eval.py`: correctness and token cost against a real
+  model, direct versus through the proxy, across 7 agent-style scenarios.
+  `--dry-run` (run in CI) reports which answers survive compression without
+  calling an API.
 - `test/test_proxy_fidelity.py`: 90 regression tests covering the above,
   including end-to-end proxy tests against a local mock upstream. Every test
   targeting a fix was confirmed to fail on the previous code. The rest are

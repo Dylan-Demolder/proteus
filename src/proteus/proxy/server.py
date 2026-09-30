@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 
 import aiohttp
 from aiohttp import web
 
+from proteus import config
 from proteus.proxy.backends import Backend, get_backend
 from proteus.proxy.handler import (
     pending_retrieve_calls,
@@ -51,6 +53,7 @@ class ProteusProxy:
         api_key_env: str | None = None,
         config_path: str | None = None,
         log_file: str | None = None,
+        profile: str | None = None,
     ):
         # Resolve backend
         if isinstance(backend, Backend):
@@ -59,6 +62,11 @@ class ProteusProxy:
             self.backend = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
 
         self.config_path = config_path
+        self.profile = profile
+        self._config_mtime = self._config_file_mtime()
+        if config_path or profile:
+            # Invalid settings fail here, at startup, rather than on reload.
+            config.configure(config_path, profile)
         self.log_file = log_file
         self._session: aiohttp.ClientSession | None = None
         self._stats = {
@@ -78,6 +86,37 @@ class ProteusProxy:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
+
+    def _config_file_mtime(self) -> float | None:
+        if not self.config_path:
+            return None
+        try:
+            return os.stat(self.config_path).st_mtime
+        except OSError:
+            return None
+
+    def maybe_reload_config(self) -> bool:
+        """Re-apply the config file if it changed since it was last loaded.
+
+        One stat() per request. A file that fails to parse or validate is
+        logged and ignored: the proxy keeps serving with the settings it had.
+        Only compression settings reload; the proxy: section (host, port,
+        backend) needs a restart.
+
+        Returns:
+            True if new settings were applied.
+        """
+        mtime = self._config_file_mtime()
+        if mtime is None or mtime == self._config_mtime:
+            return False
+        self._config_mtime = mtime
+        try:
+            config.configure(self.config_path, self.profile)
+        except Exception as e:
+            logger.error("Config reload failed, keeping previous settings: %s", e)
+            return False
+        logger.info("Reloaded config from %s", self.config_path)
+        return True
 
     async def close(self) -> None:
         """Close the upstream connection pool (called on app shutdown)."""
@@ -253,6 +292,7 @@ class ProteusProxy:
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Handle POST /v1/chat/completions — compress + forward."""
         self._stats["requests_total"] += 1
+        self.maybe_reload_config()
 
         try:
             body = await request.json()
@@ -359,6 +399,7 @@ def create_app(
     api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
+    profile: str | None = None,
 ) -> web.Application:
     """Create the aiohttp application with routes."""
     proxy = ProteusProxy(
@@ -367,6 +408,7 @@ def create_app(
         api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
+        profile=profile,
     )
 
     app = web.Application()
@@ -395,8 +437,14 @@ def start_proxy(
     api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
+    profile: str | None = None,
 ):
-    """Start the Proteus proxy server (blocking)."""
+    """Start the Proteus proxy server (blocking).
+
+    Compression settings come from config_path and/or profile if given;
+    those should already be applied (the CLI does), and the file is
+    re-read whenever it changes.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -408,6 +456,7 @@ def start_proxy(
         api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
+        profile=profile,
     )
 
     proxy = app["proxy"]

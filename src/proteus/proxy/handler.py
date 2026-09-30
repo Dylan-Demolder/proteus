@@ -8,9 +8,11 @@ from typing import Any
 
 from proteus import ccr, compress_tool_output
 from proteus.proxy.inject import RETRIEVE_TOOL_NAME, inject_retrieve_tool
+from proteus.router import should_compress
 
 logger = logging.getLogger(__name__)
 
+# Deprecated: the threshold is config.MIN_COMPRESS_CHARS. Kept for importers.
 MIN_COMPRESS_CHARS = 3000
 
 # Roles whose string content is a tool's output in the OpenAI chat format.
@@ -50,7 +52,7 @@ def _marker(cstats: dict, retrievable: bool) -> str:
 
 def _compress(text: str, stats: dict[str, Any], retrievable: bool) -> str | None:
     """Compress one tool output. Returns the replacement text, or None to leave it alone."""
-    if len(text) < MIN_COMPRESS_CHARS:
+    if not should_compress(text):  # honours config.MIN_COMPRESS_CHARS / profiles
         return None
     compressed, cstats = compress_tool_output(text)
     if not cstats["was_compressed"]:

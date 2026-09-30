@@ -7,7 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Checked with ruff](https://img.shields.io/badge/lint-ruff-1F4E3B?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![mypy](https://img.shields.io/badge/type%20check-mypy-2A6DB2?logo=mypy&logoColor=white)](https://mypy-lang.org/)
-[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen.svg)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-89%25-brightgreen.svg)](#tests)
 
 Proteus sits between your LLM agent and the API provider, compressing large tool outputs before they reach the model. Same answers, fraction of the tokens.
 
@@ -82,6 +82,30 @@ proteus cache path/to/cache.json  # Pre-compress a cache file on disk
 proteus stats                     # Show CCR cache statistics
 proteus retrieve <hash>           # Retrieve original from cache
 proteus clear                     # Clear the cache
+```
+
+### Configuration
+
+Thresholds live in [`config.yaml`](config.yaml), which lists every setting at its default, and three profiles bundle them:
+
+```bash
+proteus proxy --profile aggressive                  # conservative | balanced (default) | aggressive
+proteus proxy --config my.yaml                      # settings + proxy host/port/backend
+proteus proxy --config my.yaml --profile conservative
+proteus file big.json --profile aggressive
+```
+
+Precedence, lowest to highest: built-in defaults, then the profile (`--profile`, else the file's `profile:` key), then the keys in the file, then command-line flags for the `proxy:` section. Unknown keys and wrongly typed values are errors that name the key. The proxy re-reads the file when it changes. An invalid edit is logged and the previous settings stay live.
+
+From Python:
+
+```python
+from proteus import config
+from proteus.profiles import use_profile
+
+use_profile("aggressive")            # or: config.configure("my.yaml", profile="aggressive")
+config.update({"JSON_DROP_HEAD": 5})
+config.reset()                       # back to defaults
 ```
 
 ## Showcase
@@ -165,7 +189,20 @@ Latency             ~3ms per call
 
 **Average across all compressors: 63.0% savings at ~3ms latency, 100% reversible.**
 
-Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
+Run fresh: `python test/benchmark_all.py`
+
+### Live evaluation against a real model
+
+Compression ratios don't show whether the model still gets the answer right. [`benchmarks/live_eval.py`](benchmarks/live_eval.py) sends 7 agent-style conversations to a real model twice, once direct and once through the proxy. Each conversation is a tool call plus a large tool result with the answer buried in it. The script compares correctness, billed prompt tokens, and how often the model called `proteus_retrieve`. In three of the scenarios the answer is in content the compressor drops, so the model only gets them right by retrieving.
+
+```bash
+export OPENCODE_GO_API_KEY=...
+python benchmarks/live_eval.py --list-models
+python benchmarks/live_eval.py --model <model-id> -v
+python benchmarks/live_eval.py --dry-run          # offline: which answers survive compression
+```
+
+Retrieval isn't free. After a retrieve, the context holds both the compressed and the original output, so a model that retrieves every time costs more than going direct. Net savings depend on the model retrieving only when it needs to.
 
 ## Cost Analysis
 
@@ -248,8 +285,8 @@ All compression is **reversible** — originals are never lost.
 ## Key features
 
 - **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker such as `[proteus: compressed 31,432→8,358 chars. For the full original call proteus_retrieve(hash="9c10f175bc4b")]`. When the model calls `proteus_retrieve` (optionally with a `query` to get only matching lines), the proxy answers from the local cache and asks the model again. Your agent never sees the tool, so it needs no changes. This needs a complete response to inspect, so it applies to non-streaming requests. Streaming requests are still compressed, and their marker records the cache hash (`proteus retrieve <hash>`).
-- **Multi-turn history compression** (`history.py`): When a conversation exceeds threshold, old turns are compressed and originals stored in CCR — keeps the active window small without losing information.
-- **Per-session profiles** (`profiles.py`): Conservative (lossless), Balanced (default, <5% quality loss), Aggressive (max savings). `apply_profile()` merges into any config.
+- **Multi-turn history compression** (`history.py`): When a conversation exceeds a threshold, tool results from older turns (OpenAI `role: "tool"` messages, `tool_result`/`text` parts, large user messages) are replaced by their compressed form plus a `proteus_retrieve` marker, and the originals are stored in CCR. It returns a new list, leaves your messages untouched, and is safe to call every turn.
+- **Compression profiles** (`profiles.py`): Conservative (least lossy: no row-dropping or text summarization), Balanced (default), Aggressive (max savings). Activate with `--profile` or `use_profile()`; see [Configuration](#configuration).
 - **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
 - **Integrations** (`integrations/`): Hook scripts for wiring Proteus into an existing agent — including a Hermes hook that wraps tool output for compression before it reaches the model.
 
@@ -261,7 +298,7 @@ HeadRoom (the upstream project) is excellent but built for Anthropic's API. Prot
 - **Pure Python, no Rust** — installs in seconds, no compilation
 - **Deterministic only** — no ML compressors on the hot path
 - **Multi-turn compression** — compresses accumulated history, not just live output
-- **3 compression profiles** — conservative (lossless), balanced (default), aggressive (max savings)
+- **3 compression profiles** — conservative (least lossy), balanced (default), aggressive (max savings)
 - **Proxy server** — works with any OpenAI-compatible agent without code changes
 - **~90% less code** — same core value, dramatically simpler
 
@@ -278,7 +315,7 @@ git clone https://github.com/Dylan-Demolder/proteus.git
 cd proteus
 pip install -e ".[dev]"
 
-# Run all 9 test suites (518 tests) — same thing CI runs:
+# Run all 10 test suites (571 tests) — same thing CI runs:
 for f in test/run_all.py test/test_*.py; do python "$f" || exit 1; done
 
 # Lint + type check (both are CI gates):
@@ -294,9 +331,9 @@ coverage report
 python test/benchmark_all.py
 ```
 
-Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 90 proxy & fidelity tests — **518 total**.
+Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 34 history tests, 91 profiles tests, 90 proxy & fidelity tests, 40 config tests — **571 total**.
 
-Coverage: **88%** across 9 test suites. CI fails the build below **80%**.
+Coverage: **89%** across 10 test suites. CI fails the build below **80%**.
 
 ## Project structure
 
@@ -316,7 +353,7 @@ proteus/
 │   ├── history.py             # Multi-turn conversation compression
 │   ├── profiles.py            # Per-session compression profiles
 │   └── cli/                   # CLI commands
-├── test/                      # 518 tests
+├── test/                      # 571 tests
 ├── benchmarks/                # CI benchmarks
 ├── demos/
 │   ├── weather-dashboard/     # 🌤 HTML/CSS/JS weather app demo

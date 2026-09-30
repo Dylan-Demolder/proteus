@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
+from .. import config
+
 # ── Search result patterns ──
 # The leading field must look like a file path: it contains a "/" or ends in
 # an extension. Without that, "key: value" lines (YAML, `kubectl describe`,
@@ -50,21 +52,28 @@ def _score_match(content: str) -> float:
 
 def compress_search(
     content: str,
-    max_per_file: int = 5,
-    max_total: int = 30,
-    max_files: int = 15,
+    max_per_file: int | None = None,
+    max_total: int | None = None,
+    max_files: int | None = None,
 ) -> tuple[str, dict]:
     """Compress search/grep results.
 
     Args:
         content: Raw grep/ripgrep output.
-        max_per_file: Max matches to show per file.
-        max_total: Max total matches across all files.
-        max_files: Max files to show.
+        max_per_file: Max matches to show per file (default: config).
+        max_total: Max total matches across all files (default: config).
+        max_files: Max files to show (default: config).
 
     Returns:
         (compressed_text, stats_dict)
     """
+    if max_per_file is None:
+        max_per_file = config.SEARCH_MAX_PER_FILE
+    if max_total is None:
+        max_total = config.SEARCH_MAX_TOTAL
+    if max_files is None:
+        max_files = config.SEARCH_MAX_FILES
+
     stats = {
         "original_chars": len(content),
         "mode": "search",
