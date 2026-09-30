@@ -5,6 +5,100 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The proxy now compresses standard OpenAI tool results.** It only looked
+  for `{"type": "tool_result"}` blocks, which the OpenAI chat format doesn't
+  use. `{"role": "tool", "content": ...}` messages, which is how every
+  OpenAI-compatible agent sends tool output, went upstream untouched. Both
+  string content and lists of text parts are now compressed.
+- **The proxy now compresses streaming requests.** Compression was skipped
+  whenever `stream: true`. Most agents stream, so for them the proxy did
+  nothing. Compression applies to the request, so whether the response streams
+  is irrelevant.
+- **`proteus_retrieve` works.** The proxy offered the model this tool but never
+  answered calls to it, so the agent received a call to a tool it didn't
+  define. Compressed output also carried no hash to pass it. Compressed tool
+  results now end with a marker naming the hash. For non-streaming requests,
+  the proxy answers the model's retrieve calls from the cache and asks again,
+  so the client never sees the tool, and token usage is summed across rounds.
+  Streaming requests don't get the tool, because the proxy can't intercept a
+  stream. The optional `query` argument (filter to matching lines) is now
+  implemented.
+- **The code compressor no longer deletes code.** In JS/TS/Go/Rust, a line
+  with an inline `/* comment */` made every following line disappear up to the
+  next `*/`. So did a string containing `/*`, such as the glob
+  `"src/**/*.ts"`. In Python, any line starting with `"""`, for example SQL in
+  a triple-quoted string, was dropped as a "docstring", along with `#` lines
+  inside strings. The strippers now track string literals (Python uses the
+  tokenizer), keep build directives (`//go:build`, `/// <reference>`), and
+  replace a docstring that is a block's only statement with `...` so the code
+  still compiles.
+- **Columnar JSON is lossless, as documented.** Values were written with
+  `str()`, which produced Python reprs (`True`, `{'x': 1}`), broke rows on
+  embedded newlines and quotes, and couldn't tell `null` from `""`. Cells are
+  now bare strings or JSON, and the format decodes back to exactly the input.
+- **JSON arrays of strings or numbers crashed** with `AttributeError` (for
+  example, a list of file paths).
+- **Row-drop `hash=` markers pointed at nothing.** The hash was computed from
+  re-serialized JSON rather than the input text, so `retrieve()` missed
+  whenever the input was pretty-printed.
+- **`ccr.retrieve()` followed path traversal.** A hash like `../x` read a file
+  outside the cache directory, and the model now supplies hashes. Only hex
+  hashes are accepted. Cache entries are also written atomically.
+- **Proxy pass-through doubled `/v1`.** `GET /v1/models` was forwarded as
+  `.../v1/v1/models`. Content-Type is now forwarded on pass-through requests.
+- **Non-JSON upstream errors** (an HTML 502 page, a plain-text 429) are relayed
+  with their status instead of being replaced by a generic 502. Errors on
+  streaming requests are relayed as JSON instead of being labelled SSE.
+- **Long responses were cut off after 120s.** The timeout now bounds connect
+  time and time between bytes, not total duration. Timeouts return 504.
+- The proxy's upstream connection pool is closed on shutdown ("Unclosed client
+  session" warning).
+
+- **Logs, YAML, CSV and CLI output were misrouted to the search compressor,
+  which kept ~30 lines and dropped the rest.** The router counted any line
+  shaped like `word: text` as a grep hit. That included `key: value`, Markdown
+  `Note: ...`, and ISO timestamps (`2026-09-30T10:00:05` parsed as file
+  `2026-09-30T10`, line `00`). In a 300-line log, 17 of 20 distinct errors were
+  lost; every key of a 150-line YAML file was lost. A grep hit now needs a
+  file-path-shaped prefix (contains `/` or ends in an extension), and pytest
+  node ids (`a.py::test`) are excluded. Real `grep -n`, `grep -r` and `rg -C`
+  output still routes to search.
+  **Benchmark headline numbers drop as a result**: the 48-scenario average
+  goes from 68.1% to 62.5% (63.0% after the diff fix below), and the log-analyzer demo from 69% to 60%. The old
+  figures counted that discarded content as savings.
+- **Log truncation dropped every error in the middle of a long log.** Past
+  200 output lines, the deduper kept the first and last 100. It now also keeps
+  error and stack-trace lines from the middle, and marks each skipped run.
+  Block-level dedup, which ran only after truncation had already made its
+  trigger unreachable, now runs first.
+- **A compressor that found nothing could return an empty string**, which was
+  accepted as 100% compression. `compress_tool_output` now rejects empty
+  output, and the search compressor returns non-search input unchanged. The
+  log-analyzer demo forced its nginx access log through the search compressor
+  with a type hint; it now uses `logs`.
+
+- **The diff compressor dropped content without saying so.** Files past the
+  20-file cap still printed their headers but no hunks, so they looked
+  unchanged. Hunks past 10 per file vanished. And of each run of context lines
+  it kept the *first* two, usually discarding the line right next to the
+  change. It now keeps the context nearest each change, and replaces omitted
+  hunks and files with a line naming them and their +/- counts. Plain
+  `diff -u` output now counts as separate files too; hunk bodies are delimited
+  by their @@ line counts, so a removed line reading `--- x` is not mistaken
+  for the next file's header. Diff benchmark average: 21.7% → 27.9%;
+  overall: 63.0%.
+
+### Added
+
+- `test/test_proxy_fidelity.py`: 90 regression tests covering the above,
+  including end-to-end proxy tests against a local mock upstream. Every test
+  targeting a fix was confirmed to fail on the previous code. The rest are
+  guards that real `grep`/`rg` output still routes to search.
+
 ## [0.2.0] - 2026-09-24
 
 Distribution renamed to `proteus-compress` in preparation for PyPI.

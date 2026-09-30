@@ -14,9 +14,15 @@ import re
 from collections import defaultdict
 
 # ── Search result patterns ──
-_SEARCH_LINE = re.compile(r"^([^:]+):(\d+):(.+)$")  # file:line:content
-_SEARCH_CONTEXT = re.compile(r"^([^:]+)-(\d+)-(.+)$")  # file-line-content (rg context)
-_SEARCH_BINARY = re.compile(r"^([^:]+):\s*(.+)$")  # file: content (binary / header)
+# The leading field must look like a file path: it contains a "/" or ends in
+# an extension. Without that, "key: value" lines (YAML, `kubectl describe`,
+# Markdown "Note: ..."), ISO timestamps ("2026-09-30T10:00:05" reads as
+# file "2026-09-30T10", line 00) and log dates ("2026-09-30-...") all parse
+# as grep hits, and the search compressor keeps only ~30 of them.
+FILE_PATH = r"(?:[^\s:]*/[^\s:]*|[^\s:/]*\.[A-Za-z]\w{0,7})"
+_SEARCH_LINE = re.compile(rf"^({FILE_PATH}):(\d+):(.*)$")  # file:line:content
+_SEARCH_CONTEXT = re.compile(rf"^({FILE_PATH})-(\d+)-(.*)$")  # file-line-content (rg context)
+_SEARCH_BINARY = re.compile(rf"^({FILE_PATH}):\s*(.+)$")  # file: content (no line number)
 _SEARCH_SEP = re.compile(r"^--$")  # ripgrep file separator
 
 # ── Importance keywords ──
@@ -110,6 +116,15 @@ def compress_search(
 
     stats["original_files"] = len(file_matches)
     stats["original_matches"] = sum(len(v) for v in file_matches.values())
+
+    if not stats["original_matches"]:
+        # Nothing parsed as a search hit (wrong content type, e.g. forced by a
+        # caller's hint). Selecting "top matches" from nothing would return an
+        # empty string, so hand the input back unchanged instead.
+        stats["compressed_chars"] = len(content)
+        stats["compressed_files"] = 0
+        stats["compressed_matches"] = 0
+        return content, stats
 
     # Select files (by highest total score)
     file_scores = {
