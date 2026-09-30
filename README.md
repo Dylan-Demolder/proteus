@@ -189,7 +189,20 @@ Latency             ~3ms per call
 
 **Average across all compressors: 63.0% savings at ~3ms latency, 100% reversible.**
 
-Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
+Run fresh: `python test/benchmark_all.py`
+
+### Live evaluation against a real model
+
+Compression ratios don't show whether the model still gets the answer right. [`benchmarks/live_eval.py`](benchmarks/live_eval.py) sends 7 agent-style conversations to a real model twice, once direct and once through the proxy. Each conversation is a tool call plus a large tool result with the answer buried in it. The script compares correctness, billed prompt tokens, and how often the model called `proteus_retrieve`. In three of the scenarios the answer is in content the compressor drops, so the model only gets them right by retrieving.
+
+```bash
+export OPENCODE_GO_API_KEY=...
+python benchmarks/live_eval.py --list-models
+python benchmarks/live_eval.py --model <model-id> -v
+python benchmarks/live_eval.py --dry-run          # offline: which answers survive compression
+```
+
+Retrieval isn't free. After a retrieve, the context holds both the compressed and the original output, so a model that retrieves every time costs more than going direct. Net savings depend on the model retrieving only when it needs to.
 
 ## Cost Analysis
 

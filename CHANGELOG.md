@@ -115,6 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `proteus.config.configure()`, `update()`, `reset()`, `current()` and
   `DEFAULTS`; `proteus.profiles.use_profile()`.
 - `test/test_config.py` (40 tests).
+- `benchmarks/live_eval.py`: correctness and token cost against a real
+  model, direct versus through the proxy, across 7 agent-style scenarios.
+  `--dry-run` (run in CI) reports which answers survive compression without
+  calling an API.
 - `test/test_proxy_fidelity.py`: 90 regression tests covering the above,
   including end-to-end proxy tests against a local mock upstream. Every test
   targeting a fix was confirmed to fail on the previous code. The rest are
