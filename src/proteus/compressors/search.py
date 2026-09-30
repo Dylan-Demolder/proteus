@@ -142,7 +142,8 @@ def compress_search(
                 last[2],
             )
 
-    stats["original_files"] = len(file_matches)
+    original_files = len(file_matches)
+    stats["original_files"] = original_files
     stats["original_matches"] = sum(len(v) for v in file_matches.values())
 
     if not stats["original_matches"]:
@@ -222,7 +223,7 @@ def compress_search(
     ]
     rare_hidden = sum(shape_counts[_shape(text)] <= RARE_SHAPE_MAX for _, _, text in hidden)
     if hidden:
-        remaining_files = stats["original_files"] - files_shown
+        remaining_files = original_files - files_shown
         where = f", {remaining_files} more files with matches" if remaining_files > 0 else ""
         result.append(f"... {len(hidden)} more matches not shown{where} ...")
         hidden_shapes: dict[str, int] = defaultdict(int)

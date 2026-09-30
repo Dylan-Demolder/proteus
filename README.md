@@ -48,7 +48,7 @@ pip install git+https://github.com/Dylan-Demolder/proteus.git
 
 ```bash
 # OpenCode Go (flat-rate — recommended)
-proteus proxy --backend opencode-go
+proteus proxy --backend opencode-go   # forwards your client's x-opencode-session, or derives one per conversation
 
 # OpenRouter (pay-per-token)
 proteus proxy --backend openrouter
@@ -199,8 +199,18 @@ Compression ratios don't show whether the model still gets the answer right. [`b
 export OPENCODE_GO_API_KEY=...
 python benchmarks/live_eval.py --list-models
 python benchmarks/live_eval.py --model <model-id> -v
+python benchmarks/live_eval.py --model <model-id> --repeat 20 --concurrency 10   # models vary run to run
 python benchmarks/live_eval.py --dry-run          # offline: which answers survive compression
 ```
+
+Latest results, 20 trials of each scenario per mode ([full findings](docs/live-eval-results.md)):
+
+| model | direct correct | Proteus correct | prompt tokens, direct → Proteus |
+|---|---|---|---|
+| deepseek-v4.1-flash | 122/140 | 131/140 | 1.62M → 0.64M (−61%) |
+| mimo-v2.6-flash | 132/140 | 122/140 | 1.93M → 0.68M (−65%) |
+
+Neither model gave a wrong answer in either mode. Every miss was the model re-running its own tool to double-check instead of answering, which the harness can't execute.
 
 Retrieval isn't free. After a retrieve, the context holds both the compressed and the original output, so a model that retrieves every time costs more than going direct. Net savings depend on the model retrieving only when it needs to.
 
@@ -284,7 +294,7 @@ All compression is **reversible** — originals are never lost.
 
 ## Key features
 
-- **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker such as `[proteus: compressed 31,432→8,358 chars. For the full original call proteus_retrieve(hash="9c10f175bc4b")]`. When the model calls `proteus_retrieve` (optionally with a `query` to get only matching lines), the proxy answers from the local cache and asks the model again. Your agent never sees the tool, so it needs no changes. This needs a complete response to inspect, so it applies to non-streaming requests. Streaming requests are still compressed, and their marker records the cache hash (`proteus retrieve <hash>`).
+- **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker saying what was removed, such as `[proteus: compressed 23,138→6,609 chars: comments and docstrings removed, code unchanged. For the full original call proteus_retrieve(hash="ff5d88df2c6d"), or add query="..." (text or regex) to get just the matching lines]`. When the model calls `proteus_retrieve`, the proxy answers from the local cache and asks the model again. A `query` returns every matching line (as text, a regex, all words, or any word) with two lines of context. The count of retrieves served is in the `X-Proteus-Retrievals` response header. Compression that would save less than `min_savings_pct` (default 25%) is skipped, since a retrieve round would cost more than it saved. Your agent never sees the tool, so it needs no changes. This needs a complete response to inspect, so it applies to non-streaming requests. Streaming requests are still compressed, and their marker records the cache hash (`proteus retrieve <hash>`).
 - **Multi-turn history compression** (`history.py`): When a conversation exceeds a threshold, tool results from older turns (OpenAI `role: "tool"` messages, `tool_result`/`text` parts, large user messages) are replaced by their compressed form plus a `proteus_retrieve` marker, and the originals are stored in CCR. It returns a new list, leaves your messages untouched, and is safe to call every turn.
 - **Compression profiles** (`profiles.py`): Conservative (least lossy: no row-dropping or text summarization), Balanced (default), Aggressive (max savings). Activate with `--profile` or `use_profile()`; see [Configuration](#configuration).
 - **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
