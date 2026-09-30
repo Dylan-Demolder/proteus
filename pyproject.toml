@@ -49,6 +49,7 @@ dev = [
     "coverage>=7.0",
     "ruff>=0.4",
     "mypy>=1.8",
+    "types-PyYAML",
 ]
 all = ["aiohttp>=3.9", "pyyaml>=6.0", "click>=8.0"]
 

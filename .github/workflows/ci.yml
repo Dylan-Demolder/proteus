@@ -22,6 +22,7 @@ env:
     test/test_history.py
     test/test_profiles.py
     test/test_proxy_fidelity.py
+    test/test_config.py
 
 jobs:
   test:
@@ -75,7 +76,7 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install ruff mypy "aiohttp>=3.9" "pyyaml>=6.0" "click>=8.0"
+          pip install ruff mypy types-PyYAML "aiohttp>=3.9" "pyyaml>=6.0" "click>=8.0"
       - name: Ruff
         run: ruff check src/ test/ benchmarks/
       - name: Mypy

@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .. import config
+
 # ── Diff patterns ──
 _DIFF_GIT = re.compile(r"^diff --git a/(.+) b/(.+)$")
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
@@ -132,21 +134,27 @@ def _trim_context(body: list[str], max_context_lines: int) -> list[str]:
 
 def compress_diff(
     content: str,
-    max_context_lines: int = 2,
-    max_hunks_per_file: int = 10,
-    max_files: int = 20,
+    max_context_lines: int | None = None,
+    max_hunks_per_file: int | None = None,
+    max_files: int | None = None,
 ) -> tuple[str, dict]:
     """Compress git diff output.
 
     Args:
         content: Unified diff output.
-        max_context_lines: Context lines to keep on each side of a change.
-        max_hunks_per_file: Max hunks to show per file.
-        max_files: Max files to show.
+        max_context_lines: Context lines to keep on each side of a change (default: config).
+        max_hunks_per_file: Max hunks to show per file (default: config).
+        max_files: Max files to show (default: config).
 
     Returns:
         (compressed_diff, stats_dict)
     """
+    if max_context_lines is None:
+        max_context_lines = config.DIFF_MAX_CONTEXT_LINES
+    if max_hunks_per_file is None:
+        max_hunks_per_file = config.DIFF_MAX_HUNKS_PER_FILE
+    if max_files is None:
+        max_files = config.DIFF_MAX_FILES
     stats = {
         "original_chars": len(content),
         "mode": "diff",
