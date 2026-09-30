@@ -307,6 +307,39 @@ body, _, st = transform_request_body(retrieved)
 check("results of proteus_retrieve are not re-compressed",
       st["compressed"] == 0 and body["messages"][1]["content"] == payload)
 
+# Compression that saves little is not worth a possible retrieve round
+small_diff = "\n".join(
+    f"diff --git a/app/mod_{f}.py b/app/mod_{f}.py\nindex 1..2 100644\n--- a/app/mod_{f}.py\n"
+    f"+++ b/app/mod_{f}.py\n@@ -1,3 +1,3 @@\n import os\n-VERSION = '1.{f}'\n+VERSION = '2.{f}'\n"
+    f" print(VERSION)" for f in range(26))
+body, _, st = transform_request_body(openai_body(small_diff))
+check("little savings: tool output sent as is", st["compressed"] == 0
+      and body["messages"][2]["content"] == small_diff)
+config.update({"MIN_SAVINGS_PCT": 0})
+body, _, st = transform_request_body(openai_body(small_diff))
+check("min_savings_pct 0: small savings still compressed", st["compressed"] == 1)
+config.reset()
+
+# The marker says what was removed, so the model knows whether to retrieve
+from proteus.proxy.handler import _marker
+
+
+def mk(**st):
+    return _marker({"original_chars": 9000, "compressed_chars": 900, "hash": "abc", **st}, True)
+
+
+check("marker: lossless columnar says nothing dropped",
+      "nothing dropped" in mk(compressor="json_crusher", mode="columnar", original_rows=300))
+check("marker: row drop says how many rows are hidden",
+      "480 of 500 rows not shown" in mk(compressor="json_crusher", mode="row_drop", original_rows=500,
+                                        dropped_rows=480))
+check("marker: code says code unchanged", "code unchanged" in mk(compressor="code_python"))
+check("marker: logs say whether errors were kept",
+      "every error line kept" in mk(compressor="log_deduper", errors_dropped=0)
+      and "3 error lines not shown" in mk(compressor="log_deduper", errors_dropped=3))
+check("marker: still names the hash", 'proteus_retrieve(hash="abc")' in mk(compressor="unknown"))
+check("marker: mentions the query option", 'query="..."' in mk(compressor="unknown"))
+
 section("5b. Proxy handler — retrieve helpers")
 
 h = ccr.store("alpha line\nBeta LINE\ngamma\n" + "x" * 100, "c", "text", {})
@@ -317,9 +350,28 @@ def call(args, name=RETRIEVE_TOOL_NAME, id_="t1"):
 
 
 check("run_retrieve returns the original", run_retrieve(call(json.dumps({"hash": h}))).startswith("alpha line"))
-q = run_retrieve(call(json.dumps({"hash": h, "query": "line"})))
-check("run_retrieve query filters lines (case-insensitive)", "1: alpha line" in q and "2: Beta LINE" in q
-      and "gamma" not in q)
+doc = "\n".join(f"filler {i}" for i in range(100))
+doc = doc.replace("filler 10\n", "alpha line\n").replace("filler 11\n", "Beta LINE\n")
+doc = doc.replace("filler 60\n", "The staging database listens on port 6543\n")
+doc = doc.replace("filler 80\n", '  "order_id": 2217,\n').replace("filler 81\n", '  "status": "refunded",\n')
+hd = ccr.store(doc, "c", "text", {})
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "line"})))
+check("run_retrieve query filters lines (case-insensitive)", "11: alpha line" in q and "12: Beta LINE" in q
+      and "port 6543" not in q)
+check("run_retrieve query shows context lines", "10- filler 9" in q and "14- filler 13" in q
+      and "15- filler 14" not in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "refunded"})))
+check("run_retrieve context carries the neighbouring field", '81-   "order_id": 2217,' in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "staging database port"})))
+check("run_retrieve multi-word query matches a line with every word", "61: The staging database" in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "order_id.: [0-9]+"})))
+check("run_retrieve query as a regex", "81: " in q and "refunded" in q and "port 6543" not in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "nothing Beta"})))
+check("run_retrieve falls back to lines with any word", "12: Beta LINE" in q)
+check("run_retrieve no match is a readable message",
+      run_retrieve(call(json.dumps({"hash": hd, "query": "zebra"}))).startswith("No lines"))
+check("run_retrieve returns the original when the query matches most of it",
+      run_retrieve(call(json.dumps({"hash": h, "query": "a"}))).startswith("alpha line"))
 check("run_retrieve unknown hash is a readable error", "no cached content" in run_retrieve(call('{"hash": "ffff"}')))
 check("run_retrieve bad arguments is a readable error", run_retrieve(call("not json")).startswith("Error"))
 
@@ -443,6 +495,7 @@ async def e2e():
         check("E2E retrieve: client gets the final answer, not the tool call",
               data["choices"][0]["message"]["content"] == "done"
               and "tool_calls" not in data["choices"][0]["message"])
+        check("E2E retrieve: count reported in X-Proteus-Retrievals", r.headers.get("X-Proteus-Retrievals") == "1")
         check("E2E retrieve: usage summed across rounds",
               data["usage"] == {"prompt_tokens": 1100, "completion_tokens": 15, "total_tokens": 1115})
         async with client.get(f"{base}/readyz") as r:
@@ -474,6 +527,18 @@ asyncio.run(e2e())
 # =============================================================================
 section("7. Routing & log fidelity")
 
+
+from proteus.compressors.search import compress_search as _cs
+
+hits = [f"src/svc_{f:02d}.py:{10 + j * 7}:    timeout = get_setting('timeout_{f}_{j}')"
+        for f in range(40) for j in range(8)]
+hits.insert(5, "src/lonely.py:3:    timeout = 4711  # hard-coded")
+out, st = _cs("\n".join(hits))
+check("Search: a lone unusual match in a one-match file is kept", "timeout = 4711" in out)
+check("Search: hidden matches are counted, all files accounted for",
+      f"{321 - st['compressed_matches']} more matches not shown, {41 - st['compressed_files']} more files" in out)
+check("Search: hidden matches summarized by shape", "× `timeout = get_setting('…')`" in out)
+check("Search: stats say no unusual match was hidden", st["rare_hidden"] == 0)
 from proteus.compressors.search import compress_search
 from proteus.router import ContentType, detect_content_type
 
@@ -533,6 +598,17 @@ check("long log is compressed", stats["was_compressed"])
 check("errors from the truncated middle survive",
       all(f"ERROR job {i} failed" in out for i in range(25, 1000, 50)))
 check("omitted runs are marked", "lines omitted" in out)
+check("log stats: no errors dropped", stats["errors_dropped"] == 0)
+flood = "\n".join(f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z " + (f"ERROR e{i}" if 300 <= i < 600 else f"INFO r{i}")
+                  for i in range(900))
+fstats = compress_tool_output(flood)[1]
+check("log stats: errors past the cap are counted", fstats.get("errors_dropped") == 100)
+check("omitted runs say no errors were dropped", "no errors or stack frames among them" in out)
+from proteus.compressors.log_deduper import _truncate_keeping_errors
+
+capped = _truncate_keeping_errors(["x"] * 4 + ["ERROR a", "ERROR b", "ERROR c"] + ["x"] * 4, 2)
+check("omitted runs that dropped errors don't claim otherwise",
+      "ERROR c" not in capped and "... 4 lines omitted ..." in capped)
 
 
 # =============================================================================

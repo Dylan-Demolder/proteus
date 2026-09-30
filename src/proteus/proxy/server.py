@@ -9,6 +9,7 @@ Backends: openrouter, opencode-go, openai, generic
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,52 @@ MAX_RETRIEVE_ROUNDS = 3
 # upstream without cutting off a healthy response.
 CHAT_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
 PASSTHROUGH_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
+
+try:
+    from importlib.metadata import version as _pkg_version
+
+    USER_AGENT = f"proteus/{_pkg_version('proteus-compress')}"
+except Exception:  # running from a source checkout
+    USER_AGENT = "proteus"
+
+# Client headers relayed upstream as-is. Providers use them to identify the
+# client and route or cache per conversation (OpenCode Go rejects requests
+# without a session ID), so a proxy that drops them breaks the client.
+FORWARD_HEADERS = ("X-Title", "HTTP-Referer", "User-Agent")
+
+
+def _is_session_header(name: str) -> bool:
+    """x-opencode-session, session_id (Codex), x-claude-code-session-id, ..."""
+    name = name.lower().replace("_", "-")
+    return name.startswith("x-opencode-") or "session" in name
+
+
+def client_headers(request_headers) -> dict[str, str]:
+    """Headers from the client that go upstream unchanged."""
+    headers = {h: request_headers[h] for h in FORWARD_HEADERS if h in request_headers}
+    headers.setdefault("User-Agent", USER_AGENT)
+    for h, v in request_headers.items():
+        if _is_session_header(h):
+            headers[h] = v
+    return headers
+
+
+def conversation_id(body: dict) -> str:
+    """A stable ID for a conversation, from its model and opening messages.
+
+    Every turn of an agent conversation resends the same system prompt and
+    first user message, so they hash to the same ID across turns while
+    different conversations get different IDs.
+    """
+    opening = []
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        opening.append([msg.get("role"), msg.get("content")])
+        if msg.get("role") == "user":
+            break
+    seed = json.dumps([body.get("model"), opening], sort_keys=True, default=str)
+    return "proteus-" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
 class ProteusProxy:
@@ -190,14 +237,15 @@ class ProteusProxy:
         }
         for h, v in self.backend.extra_headers.items():
             headers[h] = v
-
-        for h in ["X-Title", "HTTP-Referer"]:
-            if h in request_headers:
-                headers[h] = request_headers[h]
+        headers.update(client_headers(request_headers))
+        session_header = self.backend.session_header
+        if session_header and not any(_is_session_header(h) for h in headers):
+            headers[session_header] = conversation_id(body)
 
         upstream_url = f"{self.upstream_url}/chat/completions"
         usage: dict[str, int] = {}
         retrieve_round = 0
+        retrievals = 0
         start_fwd = time.time()
 
         while True:
@@ -263,6 +311,7 @@ class ProteusProxy:
             assistant, results = followup
             mod_body = {**mod_body, "messages": [*mod_body["messages"], assistant, *results]}
             self._stats["retrievals_served"] += len(results)
+            retrievals += len(results)
 
         fwd_time = time.time() - start_fwd
         if usage:
@@ -287,7 +336,9 @@ class ProteusProxy:
 
         # Apply backend-specific response transformations
         response_data = self.backend.transform_response(response_data)
-        return web.json_response(response_data, status=status)
+        # How many proteus_retrieve calls the proxy answered for this request.
+        return web.json_response(response_data, status=status,
+                                 headers={"X-Proteus-Retrievals": str(retrievals)})
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Handle POST /v1/chat/completions — compress + forward."""
@@ -343,7 +394,7 @@ class ProteusProxy:
         upstream = await self._get_upstream_session()
         api_key = self.backend.api_key
 
-        headers = {"Authorization": f"Bearer {api_key}"}
+        headers = {"Authorization": f"Bearer {api_key}", **client_headers(request.headers)}
         for h in ("Content-Type", "Accept"):
             if h in request.headers:
                 headers[h] = request.headers[h]

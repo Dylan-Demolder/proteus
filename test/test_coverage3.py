@@ -96,6 +96,58 @@ async def _test_header_passthrough():
         await proxy._session.close()
 
 
+def _mock_upstream(proxy):
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"id": "test-3"})
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=None)
+    mock_session = MagicMock(spec=aiohttp.ClientSession)
+    mock_session.closed = False
+    mock_session.post = MagicMock(return_value=mock_resp)
+    proxy._session = mock_session
+    return mock_session
+
+
+async def _test_session_headers():
+    """Client identity and session headers reach the upstream (OpenCode Go needs them)."""
+    proxy = ProteusProxy(backend="opencode-go")
+    session = _mock_upstream(proxy)
+    body = {"model": "m", "messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "q1"}]}
+
+    await proxy._process_and_forward(body, {"x-opencode-session": "abc", "User-Agent": "agent/1.0",
+                                            "Cookie": "nope"})
+    sent = session.post.call_args.kwargs["headers"]
+    check("x-opencode-session forwarded", sent.get("x-opencode-session") == "abc")
+    check("client User-Agent forwarded", sent.get("User-Agent") == "agent/1.0")
+    check("unrelated client headers not forwarded", "Cookie" not in sent)
+
+    await proxy._process_and_forward(body, {"session_id": "codex-1"})
+    sent = session.post.call_args.kwargs["headers"]
+    check("a client's native session header is forwarded", sent.get("session_id") == "codex-1")
+    check("no generated session when the client sent one", "x-opencode-session" not in sent)
+    check("Proteus User-Agent when the client sent none", sent.get("User-Agent", "").startswith("proteus"))
+
+    await proxy._process_and_forward(body, {})
+    first = session.post.call_args.kwargs["headers"].get("x-opencode-session")
+    later_turn = {**body, "messages": [*body["messages"], {"role": "assistant", "content": "a"},
+                                       {"role": "user", "content": "q2"}]}
+    await proxy._process_and_forward(later_turn, {})
+    second = session.post.call_args.kwargs["headers"].get("x-opencode-session")
+    other = {**body, "messages": [{"role": "user", "content": "different task"}]}
+    await proxy._process_and_forward(other, {})
+    third = session.post.call_args.kwargs["headers"].get("x-opencode-session")
+    check("session ID generated when the client sent none", bool(first))
+    check("generated session ID stable across turns", first == second)
+    check("different conversations get different session IDs", first != third)
+
+    plain = ProteusProxy(backend="openrouter")
+    session = _mock_upstream(plain)
+    await plain._process_and_forward(body, {})
+    check("no session header invented for backends that don't need one",
+          not any("session" in h.lower() for h in session.post.call_args.kwargs["headers"]))
+
+
 async def _test_upstream_client_error():
     """Upstream raises ClientError → 502."""
     proxy = ProteusProxy(backend="openrouter")
@@ -194,6 +246,7 @@ import asyncio
 async def run_tests():
     await _test_successful_no_compression()
     await _test_header_passthrough()
+    await _test_session_headers()
     await _test_upstream_client_error()
     await _test_log_writing()
     await _test_empty_api_key()

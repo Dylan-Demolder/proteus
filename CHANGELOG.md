@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OpenCode Go rejected every request through the proxy.** It now requires
+  an `x-opencode-session` header (400 `MissingSessionID` without one) and
+  asks clients to identify themselves. The proxy forwarded only `X-Title` and
+  `HTTP-Referer`, so a client's session header and User-Agent were dropped.
+  Session headers (`x-opencode-*`, `session_id`, `x-…-session-id`) and
+  `User-Agent` are now forwarded; without a client User-Agent the proxy sends
+  `proteus/<version>`. If the client sends no session header, the
+  `opencode-go` backend adds one derived from the conversation's opening
+  messages, so it stays the same across turns.
+- **`proteus_retrieve` queries rarely matched.** A query had to occur
+  verbatim in a single line, but models write `"staging database port"` or
+  `"timeout = [0-9]"`. Queries now match as text, then as a regex, then by
+  every word, then by any word. Matches come with two lines of context
+  (a lone `"status": "refunded"` line is useless without the `order_id`
+  above it), and the full original comes back when the filter wouldn't be
+  shorter.
+- **Compressed output didn't say what was removed.** With only "compressed
+  23,138→6,609 chars", careful models re-fetched content that was all there.
+  The marker now says what changed ("comments and docstrings removed, code
+  unchanged", "all 300 rows kept in columnar form", "every error line kept",
+  "480 of 500 rows not shown") and mentions the `query` option. The log
+  deduper's omission markers say when no errors were among the omitted lines.
+- **Search results miscounted and hid the odd match out.** When the match
+  cap was reached, "N more files" left out every file below the top 15, and
+  the stats reported files that were never shown. Scoring used keywords, so
+  when the search term was itself a keyword (`timeout`), every match scored
+  the same. Matches with an unusual shape are now kept first, and the hidden
+  ones are summarized by shape (`289× timeout = get_setting('…')`), so the
+  model can see nothing unusual was left out.
+- **Compression that saves little is skipped.** A 20% cut to a diff dropped
+  the file the question was about, and fetching it back cost more than was
+  saved. New `min_savings_pct` (default 25): the proxy sends the original
+  when compressing would save less.
+
 - **`--config` did nothing.** `proteus proxy --config file.yaml` printed the
   path and never read the file. `pyyaml` was a dependency nothing imported,
   and `config.yaml` claimed it was hot-reloadable. The file is now loaded and
@@ -122,6 +156,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `X-Proteus-Retrievals` response header: `proteus_retrieve` calls the proxy
+  answered for that request.
+- `benchmarks/live_eval.py`: `--repeat` and `--concurrency`, results
+  aggregated per scenario, and a separate outcome for a model that re-runs
+  its own tool instead of answering. Sends a session ID and User-Agent.
 - `proteus.config.configure()`, `update()`, `reset()`, `current()` and
   `DEFAULTS`; `proteus.profiles.use_profile()`.
 - `test/test_config.py` (40 tests).

@@ -13,6 +13,7 @@ from typing import Any
 
 # ── Routing ──
 MIN_COMPRESS_CHARS = 3000  # Skip content smaller than this (no point compressing short strings)
+MIN_SAVINGS_PCT = 25       # Proxy: send the original if compression saves less than this
 
 # ── JSON Crusher ──
 JSON_MAX_ROWS_BEFORE_DROP = 200  # Start row-dropping when array exceeds this

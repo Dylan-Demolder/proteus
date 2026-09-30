@@ -141,8 +141,11 @@ def dedup_logs(content: str) -> tuple[str, dict]:
             output_lines = block_compressed
             stats["block_dedup_applied"] = True
 
+    stats["errors_dropped"] = 0
     if len(output_lines) > config.LOG_MAX_LINES_TOTAL:
+        important_before = _count_important(output_lines)
         output_lines = _truncate_keeping_errors(output_lines, config.LOG_MAX_LINES_TOTAL)
+        stats["errors_dropped"] = important_before - _count_important(output_lines)
 
     compressed = "\n".join(output_lines)
 
@@ -151,6 +154,14 @@ def dedup_logs(content: str) -> tuple[str, dict]:
     stats["compressed_chars"] = len(compressed)
 
     return compressed, stats
+
+
+def _count_important(lines: list[str]) -> int:
+    """Error and stack-frame lines, not counting our own omission markers."""
+    return sum(_score_line(ln) >= 8.0 for ln in lines if not _OMITTED.match(ln))
+
+
+_OMITTED = re.compile(r"^\.\.\. \d+ lines omitted")
 
 
 def _truncate_keeping_errors(lines: list[str], limit: int) -> list[str]:
@@ -164,18 +175,27 @@ def _truncate_keeping_errors(lines: list[str], limit: int) -> list[str]:
     head, middle, tail = lines[:half], lines[half:-half], lines[-half:]
     kept: list[str] = []
     skipped = 0
+    skipped_important = False
     important = 0
+
+    def flush() -> None:
+        # Say whether errors were dropped: an unqualified "lines omitted"
+        # sends the model to retrieve the original just to check.
+        if skipped:
+            what = "lines omitted" if skipped_important else "lines omitted, no errors or stack frames among them"
+            kept.append(f"... {skipped} {what} ...")
+
     for line in middle:
-        if important < limit and _score_line(line) >= 8.0:
-            if skipped:
-                kept.append(f"... {skipped} lines omitted ...")
-                skipped = 0
+        is_important = _score_line(line) >= 8.0
+        if is_important and important < limit:
+            flush()
+            skipped, skipped_important = 0, False
             kept.append(line)
             important += 1
         else:
             skipped += 1
-    if skipped:
-        kept.append(f"... {skipped} lines omitted ...")
+            skipped_important = skipped_important or is_important
+    flush()
     return head + kept + tail
 
 

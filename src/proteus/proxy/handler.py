@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
-from proteus import ccr, compress_tool_output
+from proteus import ccr, compress_tool_output, config
 from proteus.proxy.inject import RETRIEVE_TOOL_NAME, inject_retrieve_tool
 from proteus.router import should_compress
 
@@ -39,13 +40,49 @@ def _retrieve_call_ids(messages: list[dict]) -> set[str]:
     return ids
 
 
+def _what_changed(cstats: dict) -> str:
+    """What compression removed, in a few words.
+
+    Without it, a careful model can't tell whether its answer might be in the
+    part it can't see, and retrieves the original just to check.
+    """
+    compressor = cstats.get("compressor", "")
+    if compressor == "json_crusher":
+        dropped = cstats.get("dropped_rows", 0)
+        if cstats.get("mode") == "columnar" and not dropped:
+            return f"all {cstats.get('original_rows', 0):,} rows kept in columnar form, nothing dropped"
+        if dropped:
+            return f"{dropped:,} of {cstats.get('original_rows', 0):,} rows not shown"
+    elif compressor.startswith("code"):
+        return "comments and docstrings removed, code unchanged"
+    elif compressor == "log_deduper":
+        if not cstats.get("errors_dropped"):
+            return "repeated and routine lines trimmed, every error line kept"
+        return f"repeated and routine lines trimmed, {cstats['errors_dropped']:,} error lines not shown"
+    elif compressor == "search":
+        shown = (f"{cstats.get('compressed_matches', 0):,} of {cstats.get('original_matches', 0):,} matches "
+                 f"shown, from {cstats.get('compressed_files', 0):,} of {cstats.get('original_files', 0):,} files")
+        if cstats.get("rare_hidden") == 0:
+            shown += "; every match unlike the others is among those shown"
+        return shown
+    elif cstats.get("mode") == "text_summary":
+        return f"start and end kept, {cstats.get('dropped_chars', 0):,} chars from the middle not shown"
+    return ""
+
+
 def _marker(cstats: dict, retrievable: bool) -> str:
     """Trailer telling the model this output was compressed and how to get it back."""
     size = f"{cstats['original_chars']:,}→{cstats['compressed_chars']:,} chars"
+    changed = _what_changed(cstats)
+    if changed:
+        size += f": {changed}"
     if retrievable:
+        # Mentioning query steers models to a cheap filtered retrieve instead
+        # of re-running their own command to double-check (seen live).
         return (
             f"\n[proteus: compressed {size}. For the full original call "
-            f'{RETRIEVE_TOOL_NAME}(hash="{cstats["hash"]}")]'
+            f'{RETRIEVE_TOOL_NAME}(hash="{cstats["hash"]}"), or add query="..." '
+            f"(text or regex) to get just the matching lines]"
         )
     return f"\n[proteus: compressed {size}; original cached as {cstats['hash']}]"
 
@@ -58,8 +95,10 @@ def _compress(text: str, stats: dict[str, Any], retrievable: bool) -> str | None
     if not cstats["was_compressed"]:
         return None
     compressed += _marker(cstats, retrievable)
-    if len(compressed) >= len(text):
-        return None  # the marker ate the savings
+    if len(compressed) > len(text) * (1 - config.MIN_SAVINGS_PCT / 100):
+        # Too little saved to be worth it: if the model then needs the
+        # original, the retrieve round costs more than compression saved.
+        return None
     saved = len(text) - len(compressed)
     stats["compressed"] += 1
     stats["total_saved"] += saved
@@ -160,11 +199,63 @@ def run_retrieve(tool_call: dict) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return original
+    return _search(original, content_hash, query)
+
+
+# Lines shown on each side of a query match, like grep -C.
+RETRIEVE_CONTEXT_LINES = 2
+
+
+def _search(original: str, content_hash: str, query: str) -> str:
+    """The lines of ``original`` that match ``query``, with context.
+
+    Models write queries like "staging database port", "mod_24.py VERSION"
+    or "timeout = [0-9]", which rarely occur verbatim. Tried in order: the
+    whole query as text, as a regular expression, lines containing every
+    word, lines containing any word. A matching line on its own often lacks
+    what the model needs (a JSON field one line up, a diff's file header),
+    so neighbouring lines come along.
+    """
+    lines = original.split("\n")
+    folded = [line.casefold() for line in lines]
     needle = query.casefold()
-    hits = [f"{n}: {line}" for n, line in enumerate(original.split("\n"), 1) if needle in line.casefold()]
+    words = needle.split()
+    hits = [n for n, line in enumerate(folded) if needle in line]
+    how = "containing"
     if not hits:
-        return f"No lines in {content_hash} match {query!r}."
-    return f"[{len(hits)} lines matching {query!r}, as line: text]\n" + "\n".join(hits)
+        try:
+            pattern = re.compile(query, re.IGNORECASE)
+        except re.error:
+            pattern = None
+        if pattern is not None:
+            hits = [n for n, line in enumerate(lines) if pattern.search(line)]
+            how = "matching the regex"
+    if not hits and len(words) > 1:
+        hits = [n for n, line in enumerate(folded) if all(w in line for w in words)]
+        how = "containing every word of"
+        if not hits:
+            hits = [n for n, line in enumerate(folded) if any(w in line for w in words)]
+            how = "containing any word of"
+    if not hits:
+        return f"No lines in {content_hash} match {query!r}; nothing else in the original matches either."
+
+    shown: set[int] = set()
+    for n in hits:
+        shown.update(range(max(0, n - RETRIEVE_CONTEXT_LINES), min(len(lines), n + RETRIEVE_CONTEXT_LINES + 1)))
+    hit_set = set(hits)
+    out = [
+        f"[All {len(hits)} lines of the full original {how} {query!r} (of {len(lines)} lines), "
+        f"with {RETRIEVE_CONTEXT_LINES} lines of context. Matches as line: text, context as line- text]"
+    ]
+    prev = None
+    for n in sorted(shown):
+        if prev is not None and n != prev + 1:
+            out.append("--")
+        out.append(f"{n + 1}{':' if n in hit_set else '-'} {lines[n]}")
+        prev = n
+    result = "\n".join(out)
+    # The query matched most of it: the original is no longer and easier to read.
+    return original if len(result) >= len(original) else result
 
 
 def pending_retrieve_calls(response_data: dict) -> tuple[dict, list[dict]] | None:
