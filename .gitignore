@@ -29,3 +29,6 @@ config.local.yaml
 .coverage.*
 htmlcov/
 coverage.xml
+
+# live_eval.py --json output
+/live*.json
