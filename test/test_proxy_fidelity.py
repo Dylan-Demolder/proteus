@@ -536,6 +536,50 @@ check("omitted runs are marked", "lines omitted" in out)
 
 
 # =============================================================================
+#  8. Diff compressor: nothing disappears silently
+# =============================================================================
+section("8. Diff fidelity")
+
+from proteus.compressors.diff import compress_diff
+
+parts = []
+for f in range(25):
+    parts.append(f"diff --git a/src/f{f}.py b/src/f{f}.py\nindex 1..2 100644\n--- a/src/f{f}.py\n+++ b/src/f{f}.py")
+    for h in range(12):
+        parts.append(f"@@ -{h * 20 + 1},7 +{h * 20 + 1},7 @@ def fn{h}():")
+        parts += [f"     ctx {f} {h} {k}" for k in range(3)]
+        parts += [f"-    old_{f}_{h}", f"+    new_{f}_{h}"]
+        parts += [f"     ctx {f} {h} {k}" for k in range(3, 6)]
+big_diff = "\n".join(parts)
+out, stats = compress_diff(big_diff)
+check("Diff: context adjacent to a change is kept",
+      "     ctx 0 0 2\n-    old_0_0" in out and "+    new_0_0\n     ctx 0 0 3" in out)
+check("Diff: distant context is dropped", "ctx 0 0 0" not in out and "ctx 0 0 5" not in out)
+check("Diff: omitted hunks are announced", "... 2 more hunks in src/f0.py omitted (+2 -2)" in out)
+check("Diff: files past the cap are named, not shown as empty headers",
+      "diff --git a/src/f20.py" not in out
+      and "5 more files omitted (+60 -60): src/f20.py, src/f21.py" in out)
+check("Diff: stats count every change", stats["additions"] == 300 and stats["deletions"] == 300)
+
+tricky_diff = """commit abc123
+Author: A <a@x>
+
+    Fix the thing
+
+diff --git a/x.sql b/x.sql
+--- a/x.sql
++++ b/x.sql
+@@ -1,3 +1,3 @@
+ SELECT 1;
+---- old comment
++++++ new comment
+ SELECT 2;"""
+out, stats = compress_diff(tricky_diff)
+check("Diff: removed line reading '--- x' is not a new file", out == tricky_diff and stats["files_affected"] == 1)
+check("Diff: commit text in `git log -p` output is kept", "    Fix the thing" in out)
+
+
+# =============================================================================
 #  RESULTS
 # =============================================================================
 section(f"RESULTS: {PASS} passed, {FAIL} failed")

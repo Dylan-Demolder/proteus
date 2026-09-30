@@ -138,7 +138,7 @@ A multi-service log analysis pipeline demonstrating Proteus on server output.
 ### 48-scenario benchmark suite (test/benchmark_all.py)
 
 ```
-Overall savings     62.5%   (48 scenarios, 502,676 → 188,260 chars)
+Overall savings     63.0%   (48 scenarios, 502,676 → 185,990 chars)
 Latency             ~3ms per call
 ```
 
@@ -146,7 +146,7 @@ Latency             ~3ms per call
 > treated any `word: text` line as grep output, so logs, CSV, YAML and CLI
 > output went to the search compressor, which keeps ~30 lines and drops the
 > rest. For example, a 59-line CSV "compressed" 93.5% by keeping 398 of 6,115
-> chars. 62.5% is what's left once that content is actually preserved.
+> chars. 63.0% is what's left once that content is actually preserved.
 
 ### Per-compressor breakdown (48 tests, 7 benchmark categories)
 
@@ -157,13 +157,13 @@ Latency             ~3ms per call
 | search | 5 | 84.9% | 97.8% | 43.8% |
 | json_crusher | 8 | 67.4% | 99.2% | 51.6% |
 | text | 11 | 28.6%* | 81.2% | 0.0% |
-| diff | 6 | 21.7% | 38.2% | 0.0% |
+| diff | 6 | 27.9% | 54.2% | 0.0% |
 | code | 6 | 20.9% | 48.9% | 10.3% |
 | below threshold (<3K chars) | 4 | 0.0% | — | — |
 
 *\* Text summarization (head + tail) triggers above 10K chars. Smaller prose, CSV, YAML and CLI output pass through unchanged.*
 
-**Average across all compressors: 62.5% savings at ~3ms latency, 100% reversible.**
+**Average across all compressors: 63.0% savings at ~3ms latency, 100% reversible.**
 
 Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
 
@@ -198,7 +198,7 @@ All figures use **42.9K tokens per request** (the average for a typical tool-out
      Direct / OpenRouter / OpenCode Go   + Proteus
 ```
 
-**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%** over 30 days (blended rate across all traffic — only content >3KB triggers compression; on those compressible outputs the per-scenario average is **62.5%**). The same work therefore uses less of your OpenCode Go credit budget (or costs less on per-token billing).
+**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%** over 30 days (blended rate across all traffic — only content >3KB triggers compression; on those compressible outputs the per-scenario average is **63.0%**). The same work therefore uses less of your OpenCode Go credit budget (or costs less on per-token billing).
 
 ### Proxy latency benchmark
 
@@ -229,7 +229,7 @@ In a single benchmark the proxy saved **450,839 chars** (~112,708 tokens) across
 | Source code | code | 20-50% | 0% |
 | File listings | file_listing | 40-50% | 0% |
 | Search results (grep) | search | 50-98% | 0% |
-| Git diffs | diff | 20-40% | 0% |
+| Git diffs | diff | 20-55% | 0% |
 | Long text (>10K) | text | 60-94% | <5% |
 | ripgrep context output | search | 80%+ | 0% |
 
@@ -278,7 +278,7 @@ git clone https://github.com/Dylan-Demolder/proteus.git
 cd proteus
 pip install -e ".[dev]"
 
-# Run all 9 test suites (511 tests) — same thing CI runs:
+# Run all 9 test suites (518 tests) — same thing CI runs:
 for f in test/run_all.py test/test_*.py; do python "$f" || exit 1; done
 
 # Lint + type check (both are CI gates):
@@ -294,7 +294,7 @@ coverage report
 python test/benchmark_all.py
 ```
 
-Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 83 proxy & fidelity tests — **511 total**.
+Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 90 proxy & fidelity tests — **518 total**.
 
 Coverage: **88%** across 9 test suites. CI fails the build below **80%**.
 
@@ -316,7 +316,7 @@ proteus/
 │   ├── history.py             # Multi-turn conversation compression
 │   ├── profiles.py            # Per-session compression profiles
 │   └── cli/                   # CLI commands
-├── test/                      # 511 tests
+├── test/                      # 518 tests
 ├── benchmarks/                # CI benchmarks
 ├── demos/
 │   ├── weather-dashboard/     # 🌤 HTML/CSS/JS weather app demo

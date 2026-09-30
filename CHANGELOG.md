@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node ids (`a.py::test`) are excluded. Real `grep -n`, `grep -r` and `rg -C`
   output still routes to search.
   **Benchmark headline numbers drop as a result**: the 48-scenario average
-  goes from 68.1% to 62.5%, and the log-analyzer demo from 69% to 60%. The old
+  goes from 68.1% to 62.5% (63.0% after the diff fix below), and the log-analyzer demo from 69% to 60%. The old
   figures counted that discarded content as savings.
 - **Log truncation dropped every error in the middle of a long log.** Past
   200 output lines, the deduper kept the first and last 100. It now also keeps
@@ -81,9 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   log-analyzer demo forced its nginx access log through the search compressor
   with a type hint; it now uses `logs`.
 
+- **The diff compressor dropped content without saying so.** Files past the
+  20-file cap still printed their headers but no hunks, so they looked
+  unchanged. Hunks past 10 per file vanished. And of each run of context lines
+  it kept the *first* two, usually discarding the line right next to the
+  change. It now keeps the context nearest each change, and replaces omitted
+  hunks and files with a line naming them and their +/- counts. Plain
+  `diff -u` output now counts as separate files too; hunk bodies are delimited
+  by their @@ line counts, so a removed line reading `--- x` is not mistaken
+  for the next file's header. Diff benchmark average: 21.7% → 27.9%;
+  overall: 63.0%.
+
 ### Added
 
-- `test/test_proxy_fidelity.py`: 83 regression tests covering the above,
+- `test/test_proxy_fidelity.py`: 90 regression tests covering the above,
   including end-to-end proxy tests against a local mock upstream. Every test
   targeting a fix was confirmed to fail on the previous code. The rest are
   guards that real `grep`/`rg` output still routes to search.
