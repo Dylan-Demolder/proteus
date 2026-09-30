@@ -347,10 +347,10 @@ def transform_request_body(
 
     Args:
         body: The parsed JSON request body.
-        inject_tool: Add the proteus_retrieve tool when something was compressed.
-            Only do this when the caller will answer the model's calls to it
-            (the proxy can for non-streaming responses). Otherwise the client
-            would receive a tool call it has no way to execute.
+        inject_tool: Add the proteus_retrieve tool when something was compressed
+            or the request carries tools. Only do this when the caller will
+            answer the model's calls to it, as the proxy does. Otherwise the
+            client would receive a tool call it has no way to execute.
 
     Returns:
         (modified_body, ccr_lookup, stats)
@@ -381,8 +381,12 @@ def transform_request_body(
                     stats["original_tools"] += 1
                     del item["_proteus_original_length"]
 
-    # Inject retrieve tool if any compression happened
-    if stats["compressed"] > 0 and inject_tool:
+    # Offer proteus_retrieve once something is compressed, and on every
+    # request that carries tools. An agent's first turn has nothing to
+    # compress yet, but adding the tool only from turn two on would change
+    # the tools list, which sits at the start of the prompt, and throw away
+    # the provider's cached prefix for the whole conversation.
+    if inject_tool and (stats["compressed"] > 0 or client_tools):
         stats["original_tools"] = len(client_tools)
         body["tools"] = inject_retrieve_tool(client_tools)
         stats["injected_tool"] = len(body["tools"]) > len(client_tools)

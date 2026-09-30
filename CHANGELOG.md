@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Adding `proteus_retrieve` mid-conversation broke prompt caching.** The
+  tool was added only once something had been compressed. An agent's first
+  turn usually has nothing to compress, so the tools list changed on turn two.
+  The tools list sits at the start of the prompt, so the provider's cached
+  prefix was lost for the rest of the conversation. The tool is now offered
+  on every request that carries tools. In the agent evaluation, DeepSeek's
+  cache hit rate through the proxy went from 50% to 57% (61% direct).
 - **OpenCode Go rejected every request through the proxy.** It now requires
   an `x-opencode-session` header (400 `MissingSessionID` without one) and
   asks clients to identify themselves. The proxy forwarded only `X-Title` and
@@ -86,8 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results now end with a marker naming the hash. For non-streaming requests,
   the proxy answers the model's retrieve calls from the cache and asks again,
   so the client never sees the tool, and token usage is summed across rounds.
-  Streaming requests don't get the tool, because the proxy can't intercept a
-  stream. The optional `query` argument (filter to matching lines) is now
+  (Streamed replies got the tool later in this release; see Added.) The optional `query` argument (filter to matching lines) is now
   implemented.
 - **The code compressor no longer deletes code.** In JS/TS/Go/Rust, a line
   with an inline `/* comment */` made every following line disappear up to the
@@ -156,6 +162,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`proteus_retrieve` for streamed replies.** Most agents stream, and until
+  now a streamed request was compressed without the retrieve tool, so dropped
+  content was out of reach. The proxy now relays each streamed round as it
+  arrives and holds back the retrieve calls. It answers them from the cache
+  and streams the next round into the same response. Usage is summed across
+  rounds, and the retrieve count arrives as a trailing SSE comment
+  (`: proteus retrievals=N`). New module `proteus.proxy.stream`.
+- `benchmarks/agent_eval.py`: multi-turn agent loop over a synthetic
+  repository, with tools executed by the harness, streaming, per-conversation
+  sessions, cached-token accounting and estimated cost at the model's prices.
 - `X-Proteus-Retrievals` response header: `proteus_retrieve` calls the proxy
   answered for that request.
 - `benchmarks/live_eval.py`: `--repeat` and `--concurrency`, results

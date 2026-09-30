@@ -19,6 +19,7 @@ import aiohttp
 from aiohttp import web
 
 from proteus import config
+from proteus.proxy import stream
 from proteus.proxy.backends import Backend, get_backend
 from proteus.proxy.handler import (
     pending_retrieve_calls,
@@ -44,6 +45,13 @@ try:
     USER_AGENT = f"proteus/{_pkg_version('proteus-compress')}"
 except Exception:  # running from a source checkout
     USER_AGENT = "proteus"
+
+SSE_HEADERS = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 # Client headers relayed upstream as-is. Providers use them to identify the
 # client and route or cache per conversation (OpenCode Go rejects requests
@@ -193,14 +201,84 @@ class ProteusProxy:
 
         return response
 
+    async def _stream_with_retrieve(
+        self, request: web.BaseRequest, upstream: aiohttp.ClientSession, upstream_url: str,
+        headers: dict[str, str], body: dict,
+    ) -> web.StreamResponse:
+        """Relay a streamed reply, answering proteus_retrieve calls in between rounds.
+
+        See proteus.proxy.stream for how each round is rewritten. The HTTP
+        status and headers go out with the first round, so an upstream error in
+        a later round is reported as an SSE error event.
+        """
+        response: web.StreamResponse | None = None
+        usage: dict = {}
+        retrievals = 0
+        last_chunk: dict = {}
+
+        async def send(events: list[str]) -> None:
+            assert response is not None
+            for event in events:
+                await response.write((event + "\n\n").encode())
+
+        try:
+            for round_no in range(MAX_RETRIEVE_ROUNDS + 1):
+                async with upstream.post(upstream_url, json=body, headers=headers, timeout=CHAT_TIMEOUT) as resp:
+                    if "text/event-stream" not in resp.content_type:
+                        data = await resp.read()
+                        if response is None:
+                            # An error (or a non-streamed reply) before anything
+                            # was sent: relay it exactly as it came.
+                            return web.Response(body=data, status=resp.status,
+                                                content_type=resp.content_type or "application/json")
+                        await send([stream.error_event(
+                            f"upstream returned {resp.status} during a proteus_retrieve round: "
+                            f"{data[:300].decode(errors='replace')}")])
+                        break
+                    if response is None:
+                        response = web.StreamResponse(status=resp.status, headers=SSE_HEADERS)
+                        await response.prepare(request)
+                    rnd = stream.StreamRound(first=round_no == 0, can_retrieve=round_no < MAX_RETRIEVE_ROUNDS)
+                    buffer = ""
+                    async for data, _ in resp.content.iter_chunks():
+                        buffer += data.decode("utf-8", errors="replace")
+                        events, buffer = stream.split_events(buffer)
+                        for event in events:
+                            await send(rnd.feed(event))
+                    if buffer.strip():
+                        await send(rnd.feed(buffer))
+                stream.add_usage(usage, rnd.usage)
+                last_chunk = rnd.last_chunk or last_chunk
+                followup = rnd.followup()
+                if followup is None:
+                    await send(rnd.closing())
+                    break
+                assistant, results = followup
+                body = {**body, "messages": [*body["messages"], assistant, *results]}
+                retrievals += len(results)
+                self._stats["retrievals_served"] += len(results)
+            if usage:
+                await send([stream.usage_event(usage, last_chunk)])
+            await send(["data: [DONE]", f": proteus retrievals={retrievals}"])
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass  # the client went away
+        except asyncio.TimeoutError:
+            if response is None:
+                return web.json_response({"error": "Upstream request timed out"}, status=504)
+            await send([stream.error_event("upstream timed out"), "data: [DONE]"])
+        except aiohttp.ClientError as e:
+            if response is None:
+                return web.json_response({"error": f"Upstream request failed: {e}"}, status=502)
+            await send([stream.error_event(f"upstream request failed: {e}"), "data: [DONE]"])
+        assert response is not None
+        return response
+
     async def _process_and_forward(self, body: dict, request_headers, request: web.Request | None = None) -> web.StreamResponse:
         """Core logic: compress body tool results and forward to upstream.
 
         If the model calls proteus_retrieve, the proxy answers the call itself
-        and asks again, so the client only ever sees its own tools. This needs
-        a complete response to inspect, so it only happens for non-streaming
-        requests. Streaming requests are still compressed, but the tool is not
-        offered, and the marker just records the cache hash.
+        and asks again, so the client only ever sees its own tools. Streamed
+        requests get the same, round by round (see _stream_with_retrieve).
 
         Args:
             body: Parsed JSON request body.
@@ -216,7 +294,7 @@ class ProteusProxy:
         # Compression is about the *request*: tool outputs going to the model.
         # Whether the *response* streams doesn't matter, so both are compressed.
         start = time.time()
-        mod_body, _ccr_lookup, cstats = transform_request_body(body, inject_tool=not is_stream)
+        mod_body, _ccr_lookup, cstats = transform_request_body(body)
         transform_time = time.time() - start
         serve_retrieve = bool(cstats.get("injected_tool"))
 
@@ -243,6 +321,8 @@ class ProteusProxy:
             headers[session_header] = conversation_id(body)
 
         upstream_url = f"{self.upstream_url}/chat/completions"
+        if is_stream and serve_retrieve and request is not None:
+            return await self._stream_with_retrieve(request, upstream, upstream_url, headers, mod_body)
         usage: dict[str, int] = {}
         retrieve_round = 0
         retrievals = 0

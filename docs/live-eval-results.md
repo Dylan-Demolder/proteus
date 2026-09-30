@@ -3,8 +3,10 @@
 Two models on [OpenCode Go](https://opencode.ai/docs/go/): `deepseek-v4.1-flash`
 and `mimo-v2.6-flash`. [`benchmarks/live_eval.py`](../benchmarks/live_eval.py)
 ran each scenario once direct to the API and once through an in-process Proteus
-proxy, repeated for many trials. This page records what those runs showed, what
-was changed in response, and what is still open.
+proxy, repeated for many trials. [`benchmarks/agent_eval.py`](../benchmarks/agent_eval.py)
+then ran multi-turn, streamed agent loops with prompt caching (see
+[Agent evaluation](#agent-evaluation)). This page records what those runs
+showed, what was changed in response, and what is still open.
 
 Reproduce:
 
@@ -12,6 +14,7 @@ Reproduce:
 export OPENCODE_GO_API_KEY=...
 python benchmarks/live_eval.py --model deepseek-v4.1-flash --repeat 20 --concurrency 10 --json live.json
 python benchmarks/live_eval.py --model mimo-v2.6-flash --repeat 20 --concurrency 10
+python benchmarks/agent_eval.py --model deepseek-v4.1-flash --repeat 8 --concurrency 10   # see "Agent evaluation"
 ```
 
 ## How to read the results
@@ -190,19 +193,118 @@ original when compression would save less than that share.
 | + retrieve queries, `min_savings_pct` | 10 | 59/70 | 61/70 | −56% |
 | + markers, search shapes (final) | 20 | 122/140 | 131/140 | −61% |
 
+## Agent evaluation
+
+The runs above are single turns: one question, one tool result, non-streamed.
+Real agents differ in three ways that affect whether Proteus pays off. They
+**stream**. They run **many turns**, re-sending the whole conversation each
+time. And providers **cache** that repeated prefix and bill it at a fraction
+of the price. On OpenCode Go, cached input costs $0.003 per 1M tokens for
+DeepSeek v4.1 flash (off-peak) against $0.15 uncached, and $0.0028 against
+$0.14 for MiMo v2.6 flash. So a token Proteus saves on a re-sent, cached turn
+is worth about 2% of one saved the first time an output enters the
+conversation.
+
+[`benchmarks/agent_eval.py`](../benchmarks/agent_eval.py) measures that. The
+model gets a task and four tools (`list_files`, `read_file`, `search`,
+`http_get`) over a synthetic repository of 46 files (165K chars) and an orders
+API (41K chars). The harness executes each call and returns the full-size
+result, looping until the model answers (up to 15 calls). Every request
+streams, with one session ID per conversation. The four tasks each need
+several tool calls:
+
+- `gateway_error`: find a gateway error code in the payment log, then the
+  function that raises it.
+- `refunds`: list the refunded orders in the API and total them.
+- `staging_port`: find where the runbook and the settings file disagree.
+- `hardcoded_timeout`: find the hard-coded timeout, then the value of the
+  setting it should use.
+
+### Streaming needed its own retrieve support
+
+Until this change, a streamed request was compressed but not offered
+`proteus_retrieve`, so content the compressor dropped was out of reach. The
+proxy now relays each streamed round as it arrives and holds back the retrieve
+calls. When a round asked only for retrieves, the proxy answers them from the
+cache and streams the next round into the same response
+([`proxy/stream.py`](../src/proteus/proxy/stream.py)). In the runs below, the
+proxy answered 3.6 retrieves per `refunds` run on DeepSeek and 1.5 on MiMo,
+all inside streamed replies.
+
+### Adding the tool mid-conversation broke caching
+
+The first agent runs showed Proteus with a lower cache hit rate than direct on
+DeepSeek: 50% against 62% of prompt tokens served from cache. This is why
+`staging_port` cost more through Proteus despite fewer tokens.
+
+The cause: the proxy added `proteus_retrieve` only once something had been
+compressed. An agent's first turn has no tool output yet, so the tools list
+changed between turns one and two. The tools list comes first in the prompt,
+so that change invalidated the whole cached prefix. The proxy now offers the
+tool on every request that carries tools. After the fix, the hit rate was 57%
+through Proteus against 61% direct on DeepSeek, and 56% against 39% on MiMo.
+
+### Results (8 runs per task and mode, after both fixes)
+
+**deepseek-v4.1-flash**
+
+| task | mode | correct | model calls | prompt tokens | cached | est. cost/run |
+|---|---|---|---|---|---|---|
+| gateway_error | direct | 8/8 | 3.6 | 13,403 | 67% | $0.00129 |
+| | Proteus | 8/8 | 3.6 | 16,450 | 66% | $0.00145 |
+| refunds | direct | 8/8 | 5.8 | 363,776 | 61% | $0.02414 |
+| | Proteus | 7/8 | 3.8 | 82,304 | 53% | $0.00892 |
+| staging_port | direct | 8/8 | 3.4 | 25,671 | 56% | $0.00205 |
+| | Proteus | 8/8 | 3.6 | 27,104 | 55% | $0.00223 |
+| hardcoded_timeout | direct | 8/8 | 4.2 | 91,626 | 55% | $0.00668 |
+| | Proteus | 8/8 | 3.9 | 24,732 | 60% | $0.00199 |
+| **total** | direct | **32/32** | | 3,955,808 | 61% | **$0.2732** |
+| | Proteus | **31/32** | | 1,204,724 | 57% | **$0.1168 (−57%)** |
+
+**mimo-v2.6-flash**
+
+| task | mode | correct | model calls | prompt tokens | cached | est. cost/run |
+|---|---|---|---|---|---|---|
+| gateway_error | direct | 8/8 | 4.0 | 6,230 | 63% | $0.00045 |
+| | Proteus | 8/8 | 4.6 | 8,840 | 67% | $0.00055 |
+| refunds | direct | 8/8 | 2.2 | 26,148 | 24% | $0.00242 |
+| | Proteus | 8/8 | 2.0 | 6,324 | 49% | $0.00072 |
+| staging_port | direct | 8/8 | 3.9 | 8,345 | 22% | $0.00106 |
+| | Proteus | 8/8 | 3.8 | 8,937 | 45% | $0.00080 |
+| hardcoded_timeout | direct | 8/8 | 3.4 | 22,487 | 35% | $0.00193 |
+| | Proteus | 8/8 | 3.8 | 8,086 | 73% | $0.00041 |
+| **total** | direct | **32/32** | | 505,681 | 39% | **$0.0468** |
+| | Proteus | **32/32** | | 257,498 | 56% | **$0.0199 (−57%)** |
+
+What this shows:
+
+- **Big outputs are where the money is.** `refunds` pulls in a 41K-char API
+  response and `hardcoded_timeout` reads large files. On these tasks, cost
+  drops 63–79%. On direct `refunds`, DeepSeek also re-fetched the API with
+  made-up pagination parameters, 12 tool calls on average, because it
+  couldn't be sure it had everything. Through Proteus, the marker says
+  "480 of 500 rows not shown" and a query gets exactly the refunded rows.
+- **Small tasks are a wash.** `gateway_error` and `staging_port` mostly use
+  `search`, whose results are already small. There the difference is within
+  run-to-run noise, from about 25% cheaper to 22% dearer.
+- **The cost saving is smaller than the token saving** (−57% cost against
+  −70% and −49% prompt tokens), because cached re-sends were already cheap.
+- **One wrong answer.** In one DeepSeek `refunds` run through Proteus, the
+  model gave the correct total of the four refunded orders but the wrong four
+  order ids. The retrieve result it had asked for listed each id two lines
+  above its `refunded` status, so this is a misread. The line-number
+  prefixes in retrieve results (`465-  "order_id": 5088,`) may make that
+  easier to get wrong. No wrong answers in the other 63 Proteus runs or in
+  64 direct runs.
+
 ## Still open
 
-- **MiMo double-checks compressed logs and search results.** With every error
-  line kept and the marker saying so, MiMo still re-runs `kubectl logs | grep`
-  in about a third of `log_errors` trials ("Let me verify I have every failure
-  by grepping the full log directly"). In a real agent loop that's one extra
-  tool round rather than a wrong answer, but it cancels part of the saving.
-  Direct is still ahead on `log_errors` (17/20 vs 13/20) and `grep_capped`
-  (20/20 vs 14/20) for MiMo.
-- **Tool calls aren't executed.** The harness scores a model that re-runs its
-  tool as not correct. Running a fake of the tool (returning the same output,
-  compressed again through the proxy) would measure what an agent actually
-  pays.
-- **Seven synthetic scenarios.** Real agent traffic has longer conversations,
-  several tool results per turn, and streaming. Streaming requests are
-  compressed but can't use `proteus_retrieve`.
+- **MiMo double-checks compressed logs and search results** in single-turn
+  runs. It re-runs `kubectl logs | grep` in about a third of `log_errors`
+  trials even when the marker says every error line was kept. In the agent
+  loop, where the harness does run its tool calls, MiMo was 32/32 correct.
+- **One synthetic repository.** The agent tasks are hand-written and the tools
+  return deterministic output. A replay of recorded sessions from a real agent
+  would be the stronger test.
+- **Line numbers in retrieve results.** Worth testing whether dropping the
+  `N:`/`N-` prefixes (or moving them to the end) avoids the one misread above.

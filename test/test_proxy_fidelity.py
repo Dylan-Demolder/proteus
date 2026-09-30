@@ -340,6 +340,18 @@ check("marker: logs say whether errors were kept",
 check("marker: still names the hash", 'proteus_retrieve(hash="abc")' in mk(compressor="unknown"))
 check("marker: mentions the query option", 'query="..."' in mk(compressor="unknown"))
 
+# The tools list must not change between an agent's turns: it starts the
+# prompt, and a change throws away the provider's cached prefix.
+agent_tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+turn1 = {"model": "m", "tools": agent_tools, "messages": [{"role": "user", "content": "go"}]}
+turn2 = {**openai_body(payload), "tools": agent_tools}
+t1, _, _ = transform_request_body(json.loads(json.dumps(turn1)))
+t2, _, _ = transform_request_body(json.loads(json.dumps(turn2)))
+check("tools list identical before and after the first compression", t1["tools"] == t2["tools"]
+      and RETRIEVE_TOOL_NAME in json.dumps(t1["tools"]))
+t0, _, _ = transform_request_body({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+check("plain chat without tools gets no tool added", "tools" not in t0)
+
 section("5b. Proxy handler — retrieve helpers")
 
 h = ccr.store("alpha line\nBeta LINE\ngamma\n" + "x" * 100, "c", "text", {})
@@ -399,6 +411,51 @@ check("strip_retrieve_calls turns a retrieve-only turn into a plain stop",
 # =============================================================================
 #  6. Proxy server end-to-end (local mock upstream, no network)
 # =============================================================================
+section("5c. Streamed replies: proteus_retrieve rounds")
+
+from proteus.proxy.stream import StreamRound, split_events
+
+
+def ev(**choice):
+    return "data: " + json.dumps({"id": "x", "choices": [choice]})
+
+
+def tc(index, name=None, args="", id_=None):
+    fn = {"arguments": args} if name is None else {"name": name, "arguments": args}
+    return {"index": index, **({"id": id_} if id_ else {}), "function": fn}
+
+
+events, rest = split_events('data: {"a":1}\r\n\r\ndata: {"b"')
+check("SSE: complete events split off, partial kept", events == ['data: {"a":1}'] and rest == 'data: {"b"')
+
+# A mixed turn: retrieve call at index 0, the client's own tool at index 1
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, "", "r0")]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(1, "read_file", '{"p"', "c1")]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, None, '{"hash":"h"}'), tc(1, None, ':1}')]}))
+out += rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+sent = [json.loads(e[6:]) for e in out]
+check("Stream: retrieve deltas held back, client tool renumbered to 0",
+      all(t["index"] == 0 and "proteus" not in json.dumps(t)
+          for c in sent for t in c["choices"][0]["delta"].get("tool_calls", [])) and len(sent) == 2)
+check("Stream: mixed turn gets no extra round", rnd.followup() is None)
+fin = json.loads(rnd.closing()[0][6:])
+check("Stream: mixed turn still finishes with tool_calls", fin["choices"][0]["finish_reason"] == "tool_calls")
+
+# Retrieve only, but the round limit is reached: the turn ends for the client
+rnd = StreamRound(can_retrieve=False)
+rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}', "r0")]}))
+rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+check("Stream: out of rounds, no followup", rnd.followup() is None)
+check("Stream: out of rounds, finish becomes stop", json.loads(rnd.closing()[0][6:])["choices"][0]["finish_reason"] == "stop")
+
+rnd = StreamRound()
+check("Stream: comments and keep-alives pass through", rnd.feed(": ping") == [": ping"])
+check("Stream: [DONE] held for the end", rnd.feed("data: [DONE]") == [] and rnd.done)
+check("Stream: usage-only chunk held, usage recorded",
+      rnd.feed('data: {"choices":[],"usage":{"prompt_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}') == []
+      and rnd.usage == {"prompt_tokens": 7, "prompt_tokens_details": {"cached_tokens": 3}})
+
 section("6. Proxy server end-to-end")
 
 from aiohttp import ClientSession, web
@@ -417,7 +474,28 @@ async def e2e():
         if body.get("stream"):
             resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await resp.prepare(request)
-            await resp.write(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+            if retrieve_once["armed"]:
+                retrieve_once["armed"] = False
+                content = body["messages"][-1]["content"]
+                args = json.dumps({"hash": re.search(r'hash="(\w+)"', content).group(1)})
+                # The call arrives split across chunks, the way providers stream it
+                for piece in (
+                    {"delta": {"role": "assistant", "content": "Checking. "}},
+                    {"delta": {"tool_calls": [{"index": 0, "id": "r1", "type": "function",
+                                               "function": {"name": RETRIEVE_TOOL_NAME, "arguments": ""}}]}},
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": args[:5]}}]}},
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": args[5:]}}]}},
+                    {"delta": {}, "finish_reason": "tool_calls"},
+                ):
+                    await resp.write(b"data: " + json.dumps({"id": "c1", "choices": [piece]}).encode() + b"\n\n")
+                await resp.write(b'data: {"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}\n\n')
+                await resp.write(b"data: [DONE]\n\n")
+                return resp
+            # Split an event across writes to exercise reassembly
+            await resp.write(b'data: {"id":"c2","choices":[{"delta":{"role":"assistant","con')
+            await resp.write(b'tent":"hi"}}]}\n\n')
+            await resp.write(b'data: {"id":"c2","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            await resp.write(b'data: {"id":"c2","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":10}}\n\n')
             await resp.write(b"data: [DONE]\n\n")
             return resp
         if retrieve_once["armed"]:
@@ -480,8 +558,31 @@ async def e2e():
         sent = received[-1]
         check("E2E stream: upstream receives the compressed tool message",
               len(sent["messages"][2]["content"]) < len(payload))
-        check("E2E stream: proteus_retrieve not offered", "tools" not in sent)
-        check("E2E stream: SSE relayed", r.status == 200 and "[DONE]" in text)
+        check("E2E stream: proteus_retrieve offered", RETRIEVE_TOOL_NAME in json.dumps(sent.get("tools")))
+        check("E2E stream: SSE relayed", r.status == 200 and '"content":"hi"' in text and "[DONE]" in text)
+
+        # Streamed: the model calls proteus_retrieve; the proxy answers it and streams the next round
+        retrieve_once["armed"] = True
+        n_before = len(received)
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload, stream=True)) as r:
+            text = await r.text()
+        followup = received[-1]["messages"]
+        chunks = [json.loads(line[6:]) for line in text.split("\n") if line.startswith("data: {")]
+        deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
+        check("E2E stream retrieve: proxy made a second upstream call", len(received) == n_before + 2)
+        check("E2E stream retrieve: second call carries the full original",
+              followup[-1]["role"] == "tool" and followup[-1]["content"] == payload
+              and followup[-2]["tool_calls"][0]["function"]["name"] == RETRIEVE_TOOL_NAME)
+        check("E2E stream retrieve: client sees both rounds' text, no retrieve call",
+              "".join(d.get("content", "") for d in deltas) == "Checking. hi"
+              and RETRIEVE_TOOL_NAME not in text)
+        check("E2E stream retrieve: one finish, one role, one [DONE]",
+              [c["choices"][0].get("finish_reason") for c in chunks if c.get("choices")].count("stop") == 1
+              and "tool_calls" not in text and sum("role" in d for d in deltas) == 1
+              and text.count("[DONE]") == 1)
+        check("E2E stream retrieve: usage summed and sent once",
+              [c["usage"] for c in chunks if "usage" in c] == [{"prompt_tokens": 1100, "completion_tokens": 15}])
+        check("E2E stream retrieve: count in a trailing SSE comment", ": proteus retrievals=1" in text)
 
         # The model calls proteus_retrieve: the proxy answers it and asks again
         retrieve_once["armed"] = True
@@ -500,7 +601,7 @@ async def e2e():
               data["usage"] == {"prompt_tokens": 1100, "completion_tokens": 15, "total_tokens": 1115})
         async with client.get(f"{base}/readyz") as r:
             ready = await r.json()
-        check("E2E retrieve: counted in /readyz", ready["stats"]["retrievals_served"] == 1)
+        check("E2E retrieve: counted in /readyz (streamed and not)", ready["stats"]["retrievals_served"] == 2)
 
         # Pass-through routes: /v1 prefix is not doubled
         async with client.get(f"{base}/v1/models") as r:

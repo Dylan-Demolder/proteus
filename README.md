@@ -212,6 +212,24 @@ Latest results, 20 trials of each scenario per mode ([full findings](docs/live-e
 
 Neither model gave a wrong answer in either mode. Every miss was the model re-running its own tool to double-check instead of answering, which the harness can't execute.
 
+### Agent evaluation: multi-turn, streaming, with prompt caching
+
+[`benchmarks/agent_eval.py`](benchmarks/agent_eval.py) runs the loop an agent actually runs. The model gets a task and four tools (`list_files`, `read_file`, `search`, `http_get`) over a synthetic repository. The harness executes each tool call and sends back the full-size result, until the model answers. Every request streams, and each conversation keeps one session ID so the provider can cache the growing prefix. Cost is estimated from the provider's prices for uncached input, cached input and output.
+
+```bash
+python benchmarks/agent_eval.py --model <model-id> --repeat 8 --concurrency 10
+python benchmarks/agent_eval.py --show-workspace   # offline: files, tasks, answers
+```
+
+Latest results, 4 tasks × 8 runs per mode ([details](docs/live-eval-results.md#agent-evaluation)):
+
+| model | direct correct | Proteus correct | prompt tokens, direct → Proteus | est. cost, direct → Proteus |
+|---|---|---|---|---|
+| deepseek-v4.1-flash | 32/32 | 31/32 | 3.96M → 1.20M | $0.273 → $0.117 (−57%) |
+| mimo-v2.6-flash | 32/32 | 32/32 | 0.51M → 0.26M | $0.047 → $0.020 (−57%) |
+
+Cached input is billed at about 2% of the uncached price on these models, so the cost saving is smaller than the token saving. Most of it comes from the turn that first brings a large tool output into the conversation.
+
 Retrieval isn't free. After a retrieve, the context holds both the compressed and the original output, so a model that retrieves every time costs more than going direct. Net savings depend on the model retrieving only when it needs to.
 
 ## Cost Analysis
@@ -294,7 +312,7 @@ All compression is **reversible** — originals are never lost.
 
 ## Key features
 
-- **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker saying what was removed, such as `[proteus: compressed 23,138→6,609 chars: comments and docstrings removed, code unchanged. For the full original call proteus_retrieve(hash="ff5d88df2c6d"), or add query="..." (text or regex) to get just the matching lines]`. When the model calls `proteus_retrieve`, the proxy answers from the local cache and asks the model again. A `query` returns every matching line (as text, a regex, all words, or any word) with two lines of context. The count of retrieves served is in the `X-Proteus-Retrievals` response header. Compression that would save less than `min_savings_pct` (default 25%) is skipped, since a retrieve round would cost more than it saved. Your agent never sees the tool, so it needs no changes. This needs a complete response to inspect, so it applies to non-streaming requests. Streaming requests are still compressed, and their marker records the cache hash (`proteus retrieve <hash>`).
+- **LLM → CCR bridge**: In proxy mode, each compressed tool result ends with a marker saying what was removed, such as `[proteus: compressed 23,138→6,609 chars: comments and docstrings removed, code unchanged. For the full original call proteus_retrieve(hash="ff5d88df2c6d"), or add query="..." (text or regex) to get just the matching lines]`. When the model calls `proteus_retrieve`, the proxy answers from the local cache and asks the model again. A `query` returns every matching line (as text, a regex, all words, or any word) with two lines of context. The count of retrieves served is in the `X-Proteus-Retrievals` response header. Compression that would save less than `min_savings_pct` (default 25%) is skipped, since a retrieve round would cost more than it saved. Your agent never sees the tool, so it needs no changes. This works for streamed replies too: the proxy relays each round as it arrives, holds back the retrieve calls, and streams the next round into the same response. The retrieve count arrives as a trailing SSE comment (`: proteus retrievals=N`), which clients ignore.
 - **Multi-turn history compression** (`history.py`): When a conversation exceeds a threshold, tool results from older turns (OpenAI `role: "tool"` messages, `tool_result`/`text` parts, large user messages) are replaced by their compressed form plus a `proteus_retrieve` marker, and the originals are stored in CCR. It returns a new list, leaves your messages untouched, and is safe to call every turn.
 - **Compression profiles** (`profiles.py`): Conservative (least lossy: no row-dropping or text summarization), Balanced (default), Aggressive (max savings). Activate with `--profile` or `use_profile()`; see [Configuration](#configuration).
 - **Proxy server** (`proteus proxy`): Transparent aiohttp proxy that auto-compresses tool responses between your agent and the LLM API.
