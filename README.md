@@ -7,7 +7,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Checked with ruff](https://img.shields.io/badge/lint-ruff-1F4E3B?logo=ruff&logoColor=white)](https://github.com/astral-sh/ruff)
 [![mypy](https://img.shields.io/badge/type%20check-mypy-2A6DB2?logo=mypy&logoColor=white)](https://mypy-lang.org/)
-[![Coverage](https://img.shields.io/badge/coverage-87%25-brightgreen.svg)](#tests)
+[![Coverage](https://img.shields.io/badge/coverage-88%25-brightgreen.svg)](#tests)
 
 Proteus sits between your LLM agent and the API provider, compressing large tool outputs before they reach the model. Same answers, fraction of the tokens.
 
@@ -121,12 +121,12 @@ The combined-project.txt shows the killer use case: an LLM seeing `cat` output o
 
 A multi-service log analysis pipeline demonstrating Proteus on server output.
 
-**5 files, 256KB → 79KB (69%):**
+**5 files, 257KB → 102KB (60%):**
 
 | File | Size | Saved | Compressor |
 |---|---|---|---|
-| combined.log (3 services, 800 entries) | 84.6KB → 21.2KB | 74.9% | log_deduper |
-| nginx.log (500 lines) | 55.2KB → 1.9KB | **96.5%** | search |
+| combined.log (3 services, 800 entries) | 84.6KB → 24.1KB | 71.5% | log_deduper |
+| nginx.log (500 lines) | 55.2KB → 22.0KB | 60.1% | log_deduper |
 | metadata.json (800 records) | 87.5KB → 28.2KB | 67.8% | json_crusher |
 | db.log (100 lines) | 9.7KB → 8.3KB | 14.3% | log_deduper |
 | app.log (200 lines) | 19.7KB → 19.6KB | 0.6% | log_deduper |
@@ -138,33 +138,32 @@ A multi-service log analysis pipeline demonstrating Proteus on server output.
 ### 48-scenario benchmark suite (test/benchmark_all.py)
 
 ```
-                 ──────────── Before ───── After ─────  Δ ────
-Overall savings     50.5%        68.1%    +17.6pp
-Latency             2.5ms         ~2.5ms   —
-
-Key fixes driving improvement:
-  Log timestamp regex (space handling)       0.0% → 98.1%
-  JSON large-string CCR hashing              0.1% → 99.2%
-  Search context format (rg --context=N)     0.0% → 82.5%
+Overall savings     62.5%   (48 scenarios, 502,676 → 188,260 chars)
+Latency             ~3ms per call
 ```
+
+> Earlier versions reported **68.1%** here. That figure was inflated: the router
+> treated any `word: text` line as grep output, so logs, CSV, YAML and CLI
+> output went to the search compressor, which keeps ~30 lines and drops the
+> rest. For example, a 59-line CSV "compressed" 93.5% by keeping 398 of 6,115
+> chars. 62.5% is what's left once that content is actually preserved.
 
 ### Per-compressor breakdown (48 tests, 7 benchmark categories)
 
 | Compressor | Tests | Avg Savings | Best | Worst |
 |---|---|---|---|---|
-| search | 16 | 92.4% | 99.7% | 0.0% |
-| json_crusher | 8 | 67.4% | 99.2% | 50.1% |
-| code | 6 | 20.9% | 48.9% | 10.3% |
+| log_deduper (logs) | 4 | 90.4% | 99.8% | 0.0% |
+| log_deduper (build output) | 4 | 84.8% | 99.7% | 0.0% |
+| search | 5 | 84.9% | 97.8% | 43.8% |
+| json_crusher | 8 | 67.4% | 99.2% | 51.6% |
+| text | 11 | 28.6%* | 81.2% | 0.0% |
 | diff | 6 | 21.7% | 38.2% | 0.0% |
-| text | 7 | 0.0%* | 93.9% | 0.0% |
-| log_deduper | 1 | 0.0%** | — | — |
-| E2E router | 4 | 0.0%*** | — | — |
+| code | 6 | 20.9% | 48.9% | 10.3% |
+| below threshold (<3K chars) | 4 | 0.0% | — | — |
 
-*\* Text compression triggers at >10K chars. Small prose/table/YAML blocks pass through. Large text (>10K) achieves ~94%.*
-*\*\* Repetitive log patterns are routed through the search compressor (16 tests, 92.4%). log_deduper handles multi-line block dedup only, which doesn't trigger on single-line benchmark input.*
-*\*\*\* End-to-end router tests dispatch via `compress_tool_output()` — savings are attributed to the underlying compressor.*
+*\* Text summarization (head + tail) triggers above 10K chars. Smaller prose, CSV, YAML and CLI output pass through unchanged.*
 
-**Average across all compressors: 68.1% savings at ~2.5ms latency, 100% reversible.**
+**Average across all compressors: 62.5% savings at ~3ms latency, 100% reversible.**
 
 Run fresh: `cd /tmp/proteus && python test/benchmark_all.py`
 
@@ -199,7 +198,7 @@ All figures use **42.9K tokens per request** (the average for a typical tool-out
      Direct / OpenRouter / OpenCode Go   + Proteus
 ```
 
-**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%** over 30 days (blended rate across all traffic — only content >3KB triggers compression; on those compressible outputs the per-scenario average is **68.1%**). The same work therefore uses less of your OpenCode Go credit budget (or costs less on per-token billing).
+**All three routes consume tokens at the same rate** — the difference is what you pay. Proteus compression cuts the actual tokens sent to the API by **27%** over 30 days (blended rate across all traffic — only content >3KB triggers compression; on those compressible outputs the per-scenario average is **62.5%**). The same work therefore uses less of your OpenCode Go credit budget (or costs less on per-token billing).
 
 ### Proxy latency benchmark
 
@@ -224,8 +223,8 @@ In a single benchmark the proxy saved **450,839 chars** (~112,708 tokens) across
 | JSON arrays | json_crusher | 60-99% | 0% (columnar / large-string CCR) |
 | JSON arrays (200+ rows) | json_crusher | 90%+ | <5% (row-drop) |
 | Single large JSON object | json_crusher | ~99% | 0% (CCR field hashing) |
-| Repetitive logs | search (routed) | 60-99% | 0% |
-| Timestamp-varying logs | search (routed) | ~98% | 0% (timestamp normalization) |
+| Repetitive logs | log_deduper | 85-99% | 0% |
+| Timestamp-varying logs | log_deduper | ~88% | 0% (timestamp normalization) |
 | Multi-line log blocks | log_deduper | varies | 0% |
 | Source code | code | 20-50% | 0% |
 | File listings | file_listing | 40-50% | 0% |
@@ -279,7 +278,7 @@ git clone https://github.com/Dylan-Demolder/proteus.git
 cd proteus
 pip install -e ".[dev]"
 
-# Run all 9 test suites (496 tests) — same thing CI runs:
+# Run all 9 test suites (511 tests) — same thing CI runs:
 for f in test/run_all.py test/test_*.py; do python "$f" || exit 1; done
 
 # Lint + type check (both are CI gates):
@@ -295,9 +294,9 @@ coverage report
 python test/benchmark_all.py
 ```
 
-Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 68 proxy & fidelity tests — **496 total**.
+Test breakdown: 106 engine tests, 57 new compressor tests, 47 coverage gap-fills, 35 edge case tests, 40 integration tests, 31 CLI tests, 21 history tests, 91 profiles tests, 83 proxy & fidelity tests — **511 total**.
 
-Coverage: **87%** across 9 test suites. CI fails the build below **80%**.
+Coverage: **88%** across 9 test suites. CI fails the build below **80%**.
 
 ## Project structure
 
@@ -317,7 +316,7 @@ proteus/
 │   ├── history.py             # Multi-turn conversation compression
 │   ├── profiles.py            # Per-session compression profiles
 │   └── cli/                   # CLI commands
-├── test/                      # 496 tests
+├── test/                      # 511 tests
 ├── benchmarks/                # CI benchmarks
 ├── demos/
 │   ├── weather-dashboard/     # 🌤 HTML/CSS/JS weather app demo

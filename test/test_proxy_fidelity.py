@@ -470,6 +470,72 @@ asyncio.run(e2e())
 
 
 # =============================================================================
+#  7. Routing: only real grep output goes to the search compressor
+# =============================================================================
+section("7. Routing & log fidelity")
+
+from proteus.compressors.search import compress_search
+from proteus.router import ContentType, detect_content_type
+
+yaml_like = "\n".join(f"key_{i}: value number {i} with some text" for i in range(150))
+out, stats = compress_tool_output(yaml_like)
+check("YAML-style 'key: value' is not routed to search", stats["content_type"] != "search_results")
+check("YAML-style: every key survives", all(f"key_{i}:" in out for i in range(150)))
+
+describe = "\n".join(f"Name:  pod-{i}\nNamespace:  default\nStatus:  Running\n" for i in range(80))
+out, stats = compress_tool_output(describe)
+check("kubectl-describe style is not routed to search", stats["content_type"] != "search_results")
+check("kubectl-describe style: every pod survives", all(f"pod-{i}\n" in out for i in range(80)))
+
+log_lines = [
+    f"2026-09-30T10:{i // 60:02d}:{i % 60:02d}Z "
+    + (f"ERROR payment failed for order {i}" if i % 10 == 5 else f"INFO request {i} served")
+    for i in range(300)
+]
+log = "\n".join(log_lines)
+check("ISO-timestamped log detected as logs, not search",
+      detect_content_type(log) == ContentType.LOGS)
+out, stats = compress_tool_output(log)
+check("ISO-timestamped log: every error survives",
+      all(f"order {i}" in out for i in range(5, 300, 10)))
+
+pytest_out = "\n".join(f"tests/test_m{i}.py::test_{j} PASSED" for i in range(10) for j in range(10))
+check("pytest node ids are not grep hits", detect_content_type(pytest_out) != ContentType.SEARCH_RESULTS)
+
+grep_n = "\n".join(f"src/pkg/mod_{i}.py:{i * 3}:    value = compute({i})" for i in range(100))
+check("real `grep -n` output is still search results",
+      detect_content_type(grep_n) == ContentType.SEARCH_RESULTS)
+rg_ctx = "\n".join(f"src/app.js-{i}-  const x{i} = {i};" for i in range(1, 60))
+check("real `rg -C` context output is still search results",
+      detect_content_type(rg_ctx) == ContentType.SEARCH_RESULTS)
+grep_no_n = "\n".join(f"docs/page_{i}.md: mentions the config flag" for i in range(80))
+check("`grep -r` without line numbers is still search results",
+      detect_content_type(grep_no_n) == ContentType.SEARCH_RESULTS)
+
+access_log = "\n".join(
+    f'10.0.1.{i % 7} - - [17/Jun/2025:08:00:{i % 60:02d} +0000] "GET /api/{i} HTTP/1.1" 200 {i * 13}'
+    for i in range(300)
+)
+out, stats = compress_search(access_log)
+check("search compressor returns non-search input unchanged", out == access_log)
+out, stats = compress_tool_output(access_log, content_type_hint="search_results")
+check("a wrong type hint never yields empty output", out.strip() != "")
+
+section("7b. Log truncation keeps errors")
+
+many = "\n".join(
+    f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z "
+    + (f"ERROR job {i} failed: exit {i}" if i % 50 == 25 else f"INFO job {i} finished in {i * 3}ms")
+    for i in range(1000)
+)
+out, stats = compress_tool_output(many)
+check("long log is compressed", stats["was_compressed"])
+check("errors from the truncated middle survive",
+      all(f"ERROR job {i} failed" in out for i in range(25, 1000, 50)))
+check("omitted runs are marked", "lines omitted" in out)
+
+
+# =============================================================================
 #  RESULTS
 # =============================================================================
 section(f"RESULTS: {PASS} passed, {FAIL} failed")

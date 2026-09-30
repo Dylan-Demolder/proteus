@@ -58,11 +58,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The proxy's upstream connection pool is closed on shutdown ("Unclosed client
   session" warning).
 
+- **Logs, YAML, CSV and CLI output were misrouted to the search compressor,
+  which kept ~30 lines and dropped the rest.** The router counted any line
+  shaped like `word: text` as a grep hit. That included `key: value`, Markdown
+  `Note: ...`, and ISO timestamps (`2026-09-30T10:00:05` parsed as file
+  `2026-09-30T10`, line `00`). In a 300-line log, 17 of 20 distinct errors were
+  lost; every key of a 150-line YAML file was lost. A grep hit now needs a
+  file-path-shaped prefix (contains `/` or ends in an extension), and pytest
+  node ids (`a.py::test`) are excluded. Real `grep -n`, `grep -r` and `rg -C`
+  output still routes to search.
+  **Benchmark headline numbers drop as a result**: the 48-scenario average
+  goes from 68.1% to 62.5%, and the log-analyzer demo from 69% to 60%. The old
+  figures counted that discarded content as savings.
+- **Log truncation dropped every error in the middle of a long log.** Past
+  200 output lines, the deduper kept the first and last 100. It now also keeps
+  error and stack-trace lines from the middle, and marks each skipped run.
+  Block-level dedup, which ran only after truncation had already made its
+  trigger unreachable, now runs first.
+- **A compressor that found nothing could return an empty string**, which was
+  accepted as 100% compression. `compress_tool_output` now rejects empty
+  output, and the search compressor returns non-search input unchanged. The
+  log-analyzer demo forced its nginx access log through the search compressor
+  with a type hint; it now uses `logs`.
+
 ### Added
 
-- `test/test_proxy_fidelity.py`: 68 regression tests covering the above,
-  including end-to-end proxy tests against a local mock upstream. Each one was
-  confirmed to fail on the previous code.
+- `test/test_proxy_fidelity.py`: 83 regression tests covering the above,
+  including end-to-end proxy tests against a local mock upstream. Every test
+  targeting a fix was confirmed to fail on the previous code. The rest are
+  guards that real `grep`/`rg` output still routes to search.
 
 ## [0.2.0] - 2026-09-24
 

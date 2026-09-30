@@ -146,10 +146,11 @@ def compress_tool_output(
 
     # Store in CCR cache if compression actually reduced size.
     content_hash = ""
-    if compressor is None or len(compressed) >= len(content):
+    if compressor is None or len(compressed) >= len(content) or not compressed.strip():
         # Compression didn't pay off — the compressor either left the input
         # alone or produced something LARGER (misdetected content type, or an
-        # input with no redundancy to exploit).
+        # input with no redundancy to exploit), or produced nothing at all
+        # (a compressor that found none of the structure it expected).
         #
         # Discard the compressor's output and return the original untouched.
         # Otherwise we'd hand back a mutated payload with no hash stored,

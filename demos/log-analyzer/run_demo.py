@@ -62,7 +62,7 @@ def main():
             "metadata.json": "json",
             "app.log": "logs",
             "db.log": "logs",
-            "nginx.log": "search_results",
+            "nginx.log": "logs",
         }
         hint = hints.get(fname)
         if hint:

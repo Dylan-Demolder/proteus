@@ -132,30 +132,51 @@ def dedup_logs(content: str) -> tuple[str, dict]:
             seen_patterns.add(norm)
             output_lines.append(raw_line)
 
-    # If output is still too long, take a summary
+    # Too long: first try collapsing repeated multi-line blocks. (This used to
+    # run after truncation had already capped the output below its trigger,
+    # so it never ran.)
     if len(output_lines) > config.LOG_MAX_LINES_TOTAL:
-        head = output_lines[:config.LOG_MAX_LINES_TOTAL // 2]
-        tail = output_lines[-(config.LOG_MAX_LINES_TOTAL // 2):]
-        dropped = len(output_lines) - config.LOG_MAX_LINES_TOTAL
-        output_lines = head + [
-            f"... {dropped} more lines truncated ..."
-        ] + tail
+        block_compressed = _dedup_blocks(output_lines)
+        if len("\n".join(block_compressed)) < len("\n".join(output_lines)):
+            output_lines = block_compressed
+            stats["block_dedup_applied"] = True
+
+    if len(output_lines) > config.LOG_MAX_LINES_TOTAL:
+        output_lines = _truncate_keeping_errors(output_lines, config.LOG_MAX_LINES_TOTAL)
 
     compressed = "\n".join(output_lines)
-
-    # If output still large, try block-level dedup (multi-line log entries)
-    if len(output_lines) > config.LOG_MAX_LINES_TOTAL * 2:
-        block_compressed = _dedup_blocks(output_lines)
-        if len(block_compressed) < len(compressed):
-            output_lines = block_compressed
-            compressed = "\n".join(output_lines)
-            stats["block_dedup_applied"] = True
 
     stats["compressed_lines"] = len(output_lines)
     stats["repetitions_saved"] = total_repetitions_saved
     stats["compressed_chars"] = len(compressed)
 
     return compressed, stats
+
+
+def _truncate_keeping_errors(lines: list[str], limit: int) -> list[str]:
+    """Keep the first and last limit/2 lines, plus errors and stack frames between.
+
+    Plain head/tail truncation dropped every error in the middle of a long
+    log, and those are the lines the model most needs. Up to `limit` of them
+    are kept from the middle; each run of skipped lines becomes one marker.
+    """
+    half = limit // 2
+    head, middle, tail = lines[:half], lines[half:-half], lines[-half:]
+    kept: list[str] = []
+    skipped = 0
+    important = 0
+    for line in middle:
+        if important < limit and _score_line(line) >= 8.0:
+            if skipped:
+                kept.append(f"... {skipped} lines omitted ...")
+                skipped = 0
+            kept.append(line)
+            important += 1
+        else:
+            skipped += 1
+    if skipped:
+        kept.append(f"... {skipped} lines omitted ...")
+    return head + kept + tail
 
 
 def _dedup_blocks(lines: list[str]) -> list[str]:
