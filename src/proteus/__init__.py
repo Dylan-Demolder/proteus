@@ -118,7 +118,10 @@ def compress_tool_output(
 
     elif detected in (ContentType.CODE_JS, ContentType.CODE_TS,
                       ContentType.CODE_GO, ContentType.CODE_RUST):
-        compressed = strip_code(content, "generic")
+        # Go and Rust need to know their language: an apostrophe there starts a
+        # one-character literal or a lifetime, not a string.
+        language = {ContentType.CODE_GO: "go", ContentType.CODE_RUST: "rust"}.get(detected, "generic")
+        compressed = strip_code(content, language)
         compressor = "code_generic"
         compressor_stats = {}
 
