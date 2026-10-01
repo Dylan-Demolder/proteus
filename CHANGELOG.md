@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **README rewritten around what users run and what the model sees.** It
+  opens with a GIF of a real request to deepseek-v4.1-flash through the proxy:
+  compression, the model's `proteus_retrieve` call, the answer, and billed
+  prompt tokens (2,202 against 16,690 direct). It has before/after screenshots
+  for logs, Python and JSON, an updated flow diagram, a table of what each
+  content type keeps and leaves out, and a short results section linking
+  `docs/live-eval-results.md`. It drops the cost-analysis tables and latency
+  figures that had no reproducible source, the duplicated feature lists, and
+  the test-count bookkeeping. 387 → 185 lines.
+- `benchmarks/make_readme_media.py` regenerates the screenshots and proxy GIF
+  from real output (`--model` for a real model, or a local stand-in without
+  a key). `make_demo_gif.py` now finds a font on Linux, opens on the finished
+  frame (what reduced-motion readers see), and draws solid bars.
+- `demos/`, `integrations/` and `CONTRIBUTING.md` READMEs corrected: current
+  figures, working commands, and the real test layout. The weather demo
+  read its files from a hard-coded `/tmp/weather-app/src`, so it now reads
+  them from its own directory and runs from a clone.
+
 ### Fixed
 
 - **Log lines that differed only in their numbers were never deduplicated.**
