@@ -56,7 +56,7 @@ jobs:
           fi
           echo "version $pkg_version matches tag"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
