@@ -5,6 +5,7 @@ import re
 from enum import Enum
 
 from . import config
+from .compressors.search import FILE_PATH
 
 
 class ContentType(Enum):
@@ -45,8 +46,8 @@ _CODE_PATTERNS: dict[ContentType, list[re.Pattern]] = {
     ],
 }
 
-_SEARCH_RESULT = re.compile(r"^[^\s:]+:(\d+:|\s)")
-_SEARCH_CONTEXT = re.compile(r"^[^\s:]+-\d+-")
+_SEARCH_RESULT = re.compile(rf"^{FILE_PATH}:(?!:)")  # not pytest node ids (a.py::test)
+_SEARCH_CONTEXT = re.compile(rf"^{FILE_PATH}-\d+-")
 _DIFF_HEADER = re.compile(
     r"^(diff --git |diff --combined |diff --cc |--- a/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@)"
 )

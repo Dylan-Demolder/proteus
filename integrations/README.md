@@ -1,33 +1,38 @@
-# Proteus Integration Scripts
+# Integrations
 
-## auto_compress.py
-Pre-compresses files for use with Proteus::
-    python auto_compress.py <path>
-    
-Creates a `.compressed` companion file. The original is left untouched.
+Scripts for wiring Proteus into an agent you run. Most agents need none of these: point the agent's API base URL at `proteus proxy` instead (see the [main README](../README.md#quick-start)).
 
-## Hermes Hook Integration
-To automatically compress large tool outputs in Hermes:
-    from proteus import compress_tool_output
-    compressed, stats = compress_tool_output(large_tool_result)
+## `auto_compress.py`: pre-compress a file
 
-## proteus-health-watchdog.sh
-**Graceful proxy failover** — auto-bypasses Proteus when the proxy is down, restores it when healthy.
+```bash
+python auto_compress.py path/to/big.json
+```
 
-Use as a systemd timer or cron job (every 1 minute, no agent needed):
+This writes `big.json.compressed` next to the original and leaves the original untouched. It's useful for large cache files that an agent reads repeatedly. `proteus cache path/to/big.json` does the same, and also keeps a `.original` copy.
 
-    # Copy to cron scripts dir
-    cp proteus-health-watchdog.sh /etc/cron.d/  # or add to your scheduler
-    
-    # Or run as a Hermes no_agent cron
-    hermes cron create --schedule "1m" --no-agent --script proteus-health-watchdog.sh
+## Compress tool output inside your own agent
 
-**What it does:**
-1. Pings `http://127.0.0.1:8787/readyz` every minute
-2. After 2 consecutive failures: clears `model.base_url` (bypasses proxy, goes direct)
-3. When proxy recovers: restores `model.base_url` to `http://127.0.0.1:8787/v1`
-4. Silent when healthy — only produces output on state transitions
+If you control the agent loop, call the library on each tool result before it goes into the conversation:
 
-**Failure modes handled:** proxy crash, port conflict, upstream API failure, OOM kill.
+```python
+from proteus import compress_tool_output
 
-**Requirements:** `curl`, `hermes` CLI in PATH, config at `~/.hermes/config.yaml`.
+compressed, stats = compress_tool_output(tool_result)   # unchanged if small or incompressible
+```
+
+The original is kept in the local cache under `stats["hash"]`, and `proteus.ccr.retrieve(hash)` returns it. Without the proxy, nothing answers the model's `proteus_retrieve` calls, so your agent has to expose retrieval itself if the model needs dropped content.
+
+## `proteus-health-watchdog.sh`: fail over if the proxy goes down
+
+For Hermes Agent. The watchdog runs every minute (from cron, a systemd timer, or `hermes cron`) and keeps the agent working if the proxy dies:
+
+1. It checks `http://127.0.0.1:8787/readyz`.
+2. After 2 failures in a row, it clears Hermes's `model.base_url`, so the agent talks to the provider directly.
+3. When the proxy is healthy again, it restores `model.base_url` to `http://127.0.0.1:8787/v1`.
+4. It prints only on state changes.
+
+```bash
+hermes cron create --schedule "1m" --no-agent --script proteus-health-watchdog.sh
+```
+
+It needs `curl` and the `hermes` CLI, and reads `~/.hermes/config.yaml`. The Hermes binary path is set at the top of the script; adjust it for your install.

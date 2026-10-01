@@ -39,37 +39,49 @@ def compact_json(content: str) -> str:
         return content
 
 
-def _get_shared_keys(rows: list[dict]) -> set[str] | None:
+def _get_shared_keys(rows: list) -> set[str] | None:
     """If all rows are dicts with the same keys, return those keys. Otherwise None."""
-    if not rows:
+    if not rows or not isinstance(rows[0], dict):
         return None
     keys_set = set(rows[0].keys())
     for row in rows[1:]:
-        if set(row.keys()) != keys_set:
+        if not isinstance(row, dict) or set(row.keys()) != keys_set:
             return None
     return keys_set
+
+
+def _cell(value: Any) -> str:
+    """Encode one columnar cell so it can be read back without ambiguity.
+
+    null is an empty cell. Plain strings are written bare. Everything else is
+    written as JSON: true/false, numbers, nested objects, and any string that
+    would otherwise be misread (empty, commas, quotes, newlines, leading or
+    trailing space, or text that looks like a number or a JSON literal).
+    """
+    if value is None:
+        return ""  # unambiguous: an empty string is always written as ""
+    if isinstance(value, str) and not _needs_quoting(value):
+        return value
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _needs_quoting(s: str) -> bool:
+    if not s or s != s.strip() or any(c in s for c in ',"\n\r'):
+        return True
+    try:
+        json.loads(s)
+    except ValueError:
+        return False
+    return True  # "42", "true", "null", "[1]"… would read back as non-strings
 
 
 def _columnar_format(rows: list[dict], keys: set[str]) -> str:
     """Convert array of uniform dicts to columnar format (compact, zero info loss)."""
     key_list = sorted(keys)
-    header = "# " + ", ".join(key_list)
+    header = "# " + ", ".join(_cell(k) for k in key_list)
     lines = [header]
     for row in rows:
-        values = []
-        for k in key_list:
-            v = row.get(k)
-            if v is None:
-                values.append("")
-            elif isinstance(v, (int, float)):
-                values.append(str(v))
-            else:
-                s = str(v)
-                if "," in s:
-                    values.append(f'"{s}"')
-                else:
-                    values.append(s)
-        lines.append(",".join(values))
+        lines.append(",".join(_cell(row[k]) for k in key_list))
     return "COLUMNS\n" + "\n".join(lines)
 
 
@@ -163,17 +175,21 @@ def crush_json(content: str) -> tuple[str, dict]:
         return compact, stats
 
     # Large array — row drop
-    return _drop_rows(parsed, n, stats)
+    return _drop_rows(parsed, n, stats, content)
 
 
-def _drop_rows(parsed: list, n: int, stats: dict) -> tuple[str, dict]:
+def _drop_rows(parsed: list, n: int, stats: dict, content: str) -> tuple[str, dict]:
     """Drop middle rows, keep head + tail with statistics."""
     head = parsed[:config.JSON_DROP_HEAD]
     tail = parsed[-config.JSON_DROP_TAIL:] if config.JSON_DROP_TAIL > 0 else []
     dropped = n - len(head) - len(tail)
 
-    # Build a content hash for the original
-    content_hash = hashlib.sha256(json.dumps(parsed, default=str).encode()).hexdigest()[:config.CCR_HASH_LENGTH]
+    # The marker must carry the same hash the CCR cache stores the original
+    # under (a hash of the raw input text), or `retrieve(hash)` finds nothing.
+    # Hashing the re-serialized array only matched when the input happened to
+    # already be compact JSON.
+    from ..ccr import _hash_content
+    content_hash = _hash_content(content)
 
     # Represent head as compact JSON
     head_compact = canonicalize(head)
