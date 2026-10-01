@@ -1,57 +1,38 @@
-# Proteus Dogfood Demo
+# Log analyzer demo
 
-A practical demonstration of Proteus compression on real-world LLM tool output.
-
-## What it does
-
-1. Generates ~800 lines of realistic multi-service log data (nginx + app server + database)
-2. Compresses each file with Proteus using the best-fit compressor
-3. Runs the same log analysis on both original and compressed data
-4. **Proves the analyses are identical** — all metrics match exactly
-5. Reports compression ratios and cost savings
-
-## Why this matters
-
-LLMs process tool output token-by-token. If you can shrink output 60-80% without losing information, you save:
-- **Context window** — more room for reasoning, less truncation
-- **Latency** — fewer tokens to generate the next response
-- **Cost** — fewer tokens → lower API bills
-
-Proteus preserves **every byte** via CCR cache. No approximations, no summaries — 100% reversible.
-
-## Quick start
+Runs Proteus over realistic server logs, the kind of output an agent gets from `kubectl logs` or `cat /var/log/...`.
 
 ```bash
-cd /tmp/proteus-demo
-pip install proteus  # from GitHub or PyPI
+pip install -e ../..        # once, from this directory
 python run_demo.py
 ```
 
-## Example output
+What it does:
+
+1. Generates about 800 log entries across nginx, an app server and a database, plus a metadata JSON file, in `/tmp/proteus-demo/data`.
+2. Compresses each file with the compressor Proteus picks for it.
+3. Restores each original from the cache by hash and checks it byte for byte.
+4. Runs the same 14-metric analysis (error counts, unique IPs, status codes, slow operations, durations) on the restored files and compares it with the originals.
+5. Prints compression ratios and a token-cost estimate at $2 per million input tokens.
+
+Example output (sizes vary slightly, since the logs are random):
 
 ```
-  combined.log        152.0KB →  41.5KB  (72.7%)
-  nginx.log            83.4KB →  17.5KB  (79.1%)
-  app.log              62.7KB →   4.1KB  (93.5%)
-  db.log                8.5KB →   1.9KB  (77.7%)
-  metadata.json         5.9KB →   2.0KB  (65.4%)
-  ──────────────────────────────────────────────
-  TOTAL               312.5KB →  67.0KB  (78.6%)
+  app.log                19.7KB →  16.5KB  ( 16.2%)  [    log_deduper]
+  combined.log           84.6KB →  24.6KB  ( 70.9%)  [    log_deduper]
+  db.log                  9.7KB →   8.9KB  (  8.4%)  [    log_deduper]
+  metadata.json          87.5KB →  28.2KB  ( 67.8%)  [   json_crusher]
+  nginx.log              55.2KB →  14.8KB  ( 73.2%)  [    log_deduper]
+  TOTAL                 256.6KB →  93.0KB  ( 63.8%)
 
-  ✅ combined.log     — ALL METRICS MATCH (0 diffs)
-  ✅ nginx.log        — ALL METRICS MATCH (0 diffs)
-  ✅ app.log          — ALL METRICS MATCH (0 diffs)
-  ✅ db.log           — ALL METRICS MATCH (0 diffs)
-  ✅ metadata.json    — ALL METRICS MATCH (0 diffs)
-
-  🟢 ALL ANALYSES IDENTICAL — Proteus compression is lossless in practice
+  🟢 ALL FILES: 100% lossless roundtrip — every byte preserved
+  🟢 ALL ANALYSES IDENTICAL
 ```
 
-## Files
+The analysis runs on originals restored from the cache, so matching metrics show that nothing is lost in storage. What the model sees is the compressed form. For logs, that means routine lines are counted rather than listed, and every error line is kept.
 
 | File | Purpose |
 |---|---|
-| `run_demo.py` | Orchestrator — generate, compress, analyze, verify |
-| `generate_logs.py` | Realistic multi-service log generator |
-| `analyze_logs.py` | Log analysis (error counts, IPs, paths, durations) |
-| `data/` | Generated logs (gitignored) |
+| `run_demo.py` | Generates, compresses, restores, analyzes and verifies |
+| `generate_logs.py` | Multi-service log generator |
+| `analyze_logs.py` | The 14-metric log analysis |
