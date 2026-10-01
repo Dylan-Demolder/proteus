@@ -108,7 +108,7 @@ class StreamRound:
         if isinstance(delta.get("content"), str):
             self.content.append(delta["content"])
         if isinstance(delta.get("tool_calls"), list):
-            kept = [c for c in (self._tool_delta(tc) for tc in delta["tool_calls"]) if c is not None]
+            kept = [c for tc in delta["tool_calls"] for c in self._tool_delta(tc)]
             if kept:
                 delta["tool_calls"] = kept
             else:
@@ -116,28 +116,40 @@ class StreamRound:
         choice["delta"] = delta
 
         if choice.get("finish_reason"):
-            self.finish = {**chunk, "choices": [choice]}
-            return []
+            # Hold the finish itself, but not what rides with it: some
+            # providers put the last content token in the finish chunk, and
+            # a held chunk is dropped when another round follows.
+            self.finish = {**chunk, "choices": [{**choice, "delta": {}}]}
+            if not delta:
+                return []
+            return [_encode({**chunk, "choices": [{**choice, "delta": delta, "finish_reason": None}]})]
         if not delta:
             return []  # it only carried retrieve deltas (or a repeated role)
         return [_encode({**chunk, "choices": [choice]})]
 
-    def _tool_delta(self, tc: Any) -> dict[str, Any] | None:
+    def _tool_delta(self, tc: Any) -> list[Any]:
+        """The client's share of one tool-call delta: nothing for a retrieve call.
+
+        Deltas for a call whose name hasn't arrived yet are held until it
+        does, so a retrieve call never leaks to the client half-formed.
+        """
         if not isinstance(tc, dict) or not isinstance(tc.get("index"), int):
-            return tc
+            return [tc]
         index = tc["index"]
         fn = tc.get("function") or {}
-        call = self.calls.get(index)
-        if call is None:
-            call = self.calls[index] = {"id": tc.get("id", ""), "name": fn.get("name") or "", "arguments": ""}
-        elif fn.get("name") and not call["name"]:
-            call["name"] = fn["name"]
+        call = self.calls.setdefault(index, {"id": "", "name": "", "arguments": "", "pending": []})
+        call["id"] = call["id"] or tc.get("id") or ""
+        call["name"] = call["name"] or fn.get("name") or ""
         call["arguments"] += fn.get("arguments") or ""
+        if not call["name"]:
+            call["pending"].append(tc)
+            return []
+        held, call["pending"] = call["pending"], []
         if call["name"] == RETRIEVE_TOOL_NAME:
-            return None
+            return []
         if index not in self.client_index:
             self.client_index[index] = len(self.client_index)
-        return {**tc, "index": self.client_index[index]}
+        return [{**d, "index": self.client_index[index]} for d in (*held, tc)]
 
     # ── end of round ──
 
@@ -151,22 +163,33 @@ class StreamRound:
     def followup(self) -> tuple[dict, list[dict]] | None:
         """The messages for another round, if this one asked only for proteus_retrieve."""
         calls = self._retrieve_calls()
-        if not calls or self.client_index or not self.can_retrieve:
+        unnamed = any(c["pending"] for c in self.calls.values())
+        if not calls or self.client_index or unnamed or not self.can_retrieve:
             return None
         message = {"role": "assistant", "content": "".join(self.content) or None, "tool_calls": calls}
         return pending_retrieve_calls({"choices": [{"message": message}]})
 
     def closing(self) -> list[str]:
         """Events that end the reply for the client when no round follows."""
+        events = []
+        for index, call in sorted(self.calls.items()):
+            if call["pending"]:
+                # The name never came: not a retrieve call, so it's the client's.
+                self.client_index.setdefault(index, len(self.client_index))
+                deltas = [{**d, "index": self.client_index[index]} for d in call["pending"]]
+                call["pending"] = []
+                like: dict[str, Any] = {k: self.last_chunk[k] for k in ("id", "object", "created", "model")
+                                        if k in self.last_chunk}
+                events.append(_encode({**like, "choices": [{"index": 0, "delta": {"tool_calls": deltas}}]}))
         if self.finish is None:
-            return []
+            return events
         finish = json.loads(json.dumps(self.finish))
         choice = finish["choices"][0]
         if self._retrieve_calls() and not self.client_index:
             # Only retrieve calls, and no more rounds allowed: the client
             # never defined that tool, so this turn simply ends.
             choice["finish_reason"] = "stop"
-        return [_encode(finish)]
+        return [*events, _encode(finish)]
 
 
 def usage_event(usage: dict[str, Any], like: dict[str, Any]) -> str:

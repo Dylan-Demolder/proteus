@@ -9,6 +9,7 @@ Backends: openrouter, opencode-go, openai, generic
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import json
 import logging
@@ -244,8 +245,16 @@ class ProteusProxy:
                     if "text/event-stream" not in resp.content_type:
                         data = await resp.read()
                         if response is None:
-                            # An error (or a non-streamed reply) before anything
-                            # was sent: relay it exactly as it came.
+                            # An error, or an upstream that ignored stream=true,
+                            # before anything was sent. A JSON reply still
+                            # can't carry our retrieve calls to the client.
+                            try:
+                                reply = json.loads(data)
+                            except ValueError:
+                                reply = None
+                            if resp.status < 400 and isinstance(reply, dict) and reply.get("choices"):
+                                reply = self.backend.transform_response(strip_retrieve_calls(reply))
+                                return web.json_response(reply, status=resp.status)
                             return web.Response(body=data, status=resp.status,
                                                 content_type=resp.content_type or "application/json")
                         await send([stream.error_event(
@@ -257,11 +266,14 @@ class ProteusProxy:
                         await response.prepare(request)
                     rnd = stream.StreamRound(first=round_no == 0, can_retrieve=round_no < MAX_RETRIEVE_ROUNDS)
                     buffer = ""
+                    # Incremental: a multi-byte character can be split across chunks.
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                     async for data, _ in resp.content.iter_chunks():
-                        buffer += data.decode("utf-8", errors="replace")
+                        buffer += decoder.decode(data)
                         events, buffer = stream.split_events(buffer)
                         for event in events:
                             await send(rnd.feed(event))
+                    buffer += decoder.decode(b"", final=True)
                     if buffer.strip():
                         await send(rnd.feed(buffer))
                 stream.add_usage(usage, rnd.usage)
@@ -313,6 +325,9 @@ class ProteusProxy:
         # Compression is about the *request*: tool outputs going to the model.
         # Whether the *response* streams doesn't matter, so both are compressed.
         start = time.time()
+        # From the client's messages, before compression rewrites them: a
+        # config change mid-conversation must not change the session.
+        conv_id = conversation_id(body)
         mod_body, _ccr_lookup, cstats = transform_request_body(body)
         transform_time = time.time() - start
         serve_retrieve = bool(cstats.get("injected_tool"))
@@ -337,12 +352,12 @@ class ProteusProxy:
         headers.update(client_headers(request_headers))
         session_header = self.backend.session_header
         if session_header and not any(_is_session_header(h) for h in headers):
-            headers[session_header] = conversation_id(body)
+            headers[session_header] = conv_id
 
         upstream_url = f"{self.upstream_url}/chat/completions"
         if is_stream and serve_retrieve and request is not None:
             return await self._stream_with_retrieve(request, upstream, upstream_url, headers, mod_body)
-        usage: dict[str, int] = {}
+        usage: dict = {}
         retrieve_round = 0
         retrievals = 0
         start_fwd = time.time()
@@ -418,7 +433,7 @@ class ProteusProxy:
         if usage:
             # Report what the whole exchange cost, not just the last round.
             _add_usage(usage, response_data)
-            response_data["usage"] = {**(response_data.get("usage") or {}), **usage}
+            response_data["usage"] = usage
 
         # Log if configured
         if self.log_file:
@@ -538,11 +553,9 @@ class ProteusProxy:
             pass
 
 
-def _add_usage(total: dict[str, int], response_data: dict) -> None:
-    """Add a response's integer token counts into a running total."""
-    for key, value in (response_data.get("usage") or {}).items():
-        if isinstance(value, int) and not isinstance(value, bool):
-            total[key] = total.get(key, 0) + value
+def _add_usage(total: dict, response_data: dict) -> None:
+    """Add a response's token counts, nested details included, into a running total."""
+    stream.add_usage(total, response_data.get("usage") or {})
 
 
 def create_app(

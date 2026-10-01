@@ -222,7 +222,11 @@ def _search(original: str, content_hash: str, query: str) -> str:
     """
     records = _json_records(original)
     if records is not None:
-        return _search_records(original, records, content_hash, query)
+        found = _search_records(original, records, query)
+        if found is not None:
+            return found
+        # No record matched. The original may still hold it outside the
+        # records (a top-level "next_cursor"), so search it line by line.
 
     lines = original.split("\n")
     hits, how = _match(lines, query)
@@ -321,18 +325,18 @@ def _json_records(original: str) -> list | None:
     return data
 
 
-def _search_records(original: str, records: list, content_hash: str, query: str) -> str:
+def _search_records(original: str, records: list, query: str) -> str | None:
     """Whole matching records of a JSON array, one per line.
 
     Line matches split records: the line with "coupon": "SAVE8" comes back
     without the order_id three lines above it, and the model has to ask
     again (seen live). Each record is matched as `"key": value` text, the way
-    it reads in the pretty-printed original.
+    it reads in the pretty-printed original. None when no record matches.
     """
     texts = [json.dumps(r, ensure_ascii=False) for r in records]
     hits, how = _match(texts, query)
     if not hits:
-        return f"No records in {content_hash} match {query!r}; nothing else in the original matches either."
+        return None
     # No record numbers: a number in front of each record sits right next to
     # its id field and invites misreading one for the other.
     out = [f"[All {len(hits)} of {len(records)} records of the full original {how} {query!r}, "

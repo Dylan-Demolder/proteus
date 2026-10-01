@@ -223,16 +223,16 @@ def _strip_generic_comments(code: str, char_literals: bool = False) -> str:
     return _collapse_blank_lines(kept, protected)
 
 
-def _function_spans(tree: ast.AST) -> list[tuple[int, int, int]]:
-    """(def line, first body line, last line) of the outermost functions,
-    looking inside classes but not inside functions."""
-    spans: list[tuple[int, int, int]] = []
+def _function_spans(tree: ast.AST) -> list[tuple[int, int, int, int]]:
+    """(def line, first body line, last line, body column) of the outermost
+    functions, looking inside classes but not inside functions."""
+    spans: list[tuple[int, int, int, int]] = []
     stack = list(ast.iter_child_nodes(tree))
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if node.body and node.end_lineno and node.body[0].lineno > node.lineno:
-                spans.append((node.lineno, node.body[0].lineno, node.end_lineno))
+                spans.append((node.lineno, node.body[0].lineno, node.end_lineno, node.body[0].col_offset))
         elif isinstance(node, ast.ClassDef):
             stack.extend(node.body)
     return sorted(spans)
@@ -254,12 +254,15 @@ def skeleton_python(code: str, min_body_lines: int = 4) -> tuple[str, int] | Non
     out: list[str] = []
     hidden = 0
     pos = 0  # next line index (0-based) not yet copied
-    for _, body_start, end in _function_spans(tree):
+    for _, body_start, end, body_col in _function_spans(tree):
         n = end - body_start + 1
-        if n < min_body_lines or body_start - 1 < pos:
+        first = lines[body_start - 1]
+        if n < min_body_lines or body_start - 1 < pos or first[:body_col].strip():
+            # Too short, overlapping, or the body starts on a line it shares
+            # with the signature ("x): return [..."): replacing that line
+            # would cut the signature off.
             continue
         out.extend(lines[pos:body_start - 1])
-        first = lines[body_start - 1]
         indent = first[: len(first) - len(first.lstrip())]
         out.append(f"{indent}...  # proteus: {n} lines hidden")
         pos = end

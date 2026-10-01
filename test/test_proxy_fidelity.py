@@ -386,8 +386,11 @@ check("run_retrieve on a JSON array returns whole records",
       q.count('"order_id"') == 6 and '{"order_id": 5003, "status": "shipped", "total": 3, "coupon": "SAVE8"}' in q)
 q = run_retrieve(call(json.dumps({"hash": hj, "query": '"status": "refunded"'})))
 check("run_retrieve JSON query written as pretty-printed key/value", '"order_id": 5007' in q and q.count("order_id") == 1)
-q = run_retrieve(call(json.dumps({"hash": hj, "query": "nothing Beta"})))
-check("run_retrieve JSON with no matching record says so", q.startswith("No records"))
+q = run_retrieve(call(json.dumps({"hash": hj, "query": "zebra"})))
+check("run_retrieve JSON with no match anywhere says so", q.startswith("No lines"))
+hk = ccr.store(json.dumps({"next_cursor": "abc123", "items": orders}, indent=2), "c", "json", {})
+q = run_retrieve(call(json.dumps({"hash": hk, "query": "next_cursor"})))
+check("run_retrieve JSON object: a key outside the records is still found", '"next_cursor": "abc123"' in q)
 q = run_retrieve(call(json.dumps({"hash": hd, "query": "nothing Beta"})))
 check("run_retrieve falls back to lines with any word", "12: Beta LINE" in q)
 check("run_retrieve no match is a readable message",
@@ -441,6 +444,11 @@ check("Skeleton: signatures, decorators, constants, class attributes kept",
 check("Skeleton: bodies replaced by a line count", "step_3" not in out and "...  # proteus: 7 lines hidden" in out)
 check("Skeleton: output still parses as Python", _ast.parse(out) is not None)
 check("Skeleton: small bodies kept", skeleton_python("def f():\n    return 1\n") is None)
+shared = ("class A:\n    def f(self,\n          x): return [\n        1,\n        2,\n        3]\n\n"
+          "    def g(self):\n" + "        y = 1\n" * 4 + "        return y\n")
+sk = skeleton_python(shared)
+check("Skeleton: a body sharing its line with the signature is left alone, output parses",
+      sk is not None and "x): return [" in sk[0] and _ast.parse(sk[0]) is not None and sk[1] == 1)
 check("Skeleton: under the size threshold, comments-only stripping",
       compress_tool_output(big_py[:5000])[1].get("mode") != "skeleton")
 hp = ccr.store(big_py, "c", "code_python", {})
@@ -489,6 +497,27 @@ rnd.feed(ev(delta={}, finish_reason="tool_calls"))
 check("Stream: out of rounds, no followup", rnd.followup() is None)
 check("Stream: out of rounds, finish becomes stop", json.loads(rnd.closing()[0][6:])["choices"][0]["finish_reason"] == "stop")
 
+# The name arrives after the first delta: held until known, then never leaked
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [{"index": 0, "id": "r0", "type": "function"}]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}')]}))
+out += rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+check("Stream: late-named retrieve call never reaches the client", out == [] and rnd.followup() is not None)
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [{"index": 0, "id": "c0", "type": "function"}]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, "read_file", "{}")]}))
+sent = [t for e in out for t in json.loads(e[6:])["choices"][0]["delta"]["tool_calls"]]
+check("Stream: late-named client call gets its held delta too",
+      [t.get("id") for t in sent] == ["c0", None] and all(t["index"] == 0 for t in sent))
+
+# Content riding in the finish chunk is sent, even when another round follows
+rnd = StreamRound()
+rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}', "r0")]}))
+out = rnd.feed(ev(delta={"content": "Let me check."}, finish_reason="tool_calls"))
+check("Stream: content in the finish chunk is relayed at once",
+      len(out) == 1 and json.loads(out[0][6:])["choices"][0]["delta"] == {"content": "Let me check."}
+      and json.loads(out[0][6:])["choices"][0]["finish_reason"] is None)
+
 rnd = StreamRound()
 check("Stream: comments and keep-alives pass through", rnd.feed(": ping") == [": ping"])
 check("Stream: [DONE] held for the end", rnd.feed("data: [DONE]") == [] and rnd.done)
@@ -506,11 +535,16 @@ from proteus.proxy.server import create_app
 async def e2e():
     received: list[dict] = []
     paths: list[str] = []
-    retrieve_once = {"armed": False, "always": False}
+    retrieve_once = {"armed": False, "always": False, "json_for_stream": False}
 
     async def chat(request):
         body = await request.json()
         received.append(body)
+        if body.get("stream") and retrieve_once["json_for_stream"]:
+            # An upstream that ignores stream=true and calls our tool anyway
+            return web.json_response({"choices": [{"message": {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "r9", "type": "function", "function": {"name": RETRIEVE_TOOL_NAME, "arguments": "{}"}}]},
+                "finish_reason": "tool_calls"}]})
         if body.get("stream"):
             resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await resp.prepare(request)
@@ -661,6 +695,14 @@ async def e2e():
         check("E2E retrieve limit: model told to say what it couldn't check",
               "last retrieve for this turn" in last["messages"][-1]["content"])
         check("E2E retrieve limit: client gets the answer", data["choices"][0]["message"]["content"] == "done")
+
+        # stream=true answered with plain JSON: our retrieve call still never reaches the client
+        retrieve_once["json_for_stream"] = True
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload, stream=True)) as r:
+            data = await r.json()
+        retrieve_once["json_for_stream"] = False
+        check("E2E stream answered with JSON: retrieve calls stripped",
+              RETRIEVE_TOOL_NAME not in json.dumps(data) and data["choices"][0]["message"]["content"] == "ok")
 
         # Pass-through routes: /v1 prefix is not doubled
         async with client.get(f"{base}/v1/models") as r:

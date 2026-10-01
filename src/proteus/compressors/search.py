@@ -156,13 +156,20 @@ def compress_search(
         return content, stats
 
     # Rare shapes are what a search result is usually looked at for.
+    shapes: dict[str, str] = {}  # each distinct match's shape, computed once
+
+    def shape_of(text: str) -> str:
+        if text not in shapes:
+            shapes[text] = _shape(text)
+        return shapes[text]
+
     shape_counts: dict[str, int] = defaultdict(int)
     for matches in file_matches.values():
         for _, text, _ in matches:
-            shape_counts[_shape(text)] += 1
+            shape_counts[shape_of(text)] += 1
     for fname, matches in file_matches.items():
         file_matches[fname] = [
-            (lnum, text, score + (RARE_BOOST if shape_counts[_shape(text)] <= RARE_SHAPE_MAX else 0.0))
+            (lnum, text, score + (RARE_BOOST if shape_counts[shape_of(text)] <= RARE_SHAPE_MAX else 0.0))
             for lnum, text, score in matches
         ]
 
@@ -221,14 +228,14 @@ def compress_search(
         for lnum, text, _ in matches
         if (fname, lnum, text) not in shown
     ]
-    rare_hidden = sum(shape_counts[_shape(text)] <= RARE_SHAPE_MAX for _, _, text in hidden)
+    rare_hidden = sum(shape_counts[shape_of(text)] <= RARE_SHAPE_MAX for _, _, text in hidden)
     if hidden:
         remaining_files = original_files - files_shown
         where = f", {remaining_files} more files with matches" if remaining_files > 0 else ""
         result.append(f"... {len(hidden)} more matches not shown{where} ...")
         hidden_shapes: dict[str, int] = defaultdict(int)
         for _, _, text in hidden:
-            hidden_shapes[_shape(text)] += 1
+            hidden_shapes[shape_of(text)] += 1
         common = sorted(hidden_shapes.items(), key=lambda kv: -kv[1])[:3]
         listed = sum(n for _, n in common)
         summary = "; ".join(f"{n}× `{shape[:100]}`" for shape, n in common)

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import codecs
 import json
 import math
 import random
@@ -317,8 +318,10 @@ async def stream_call(session, url: str, body: dict, headers: dict) -> dict:
         if resp.status != 200 or "text/event-stream" not in resp.content_type:
             return {"error": f"HTTP {resp.status}: {(await resp.text())[:300]}"}
         buffer = ""
+        # Incremental: a multi-byte character can be split across chunks.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         async for data, _ in resp.content.iter_chunks():
-            buffer += data.decode("utf-8", errors="replace")
+            buffer += decoder.decode(data)
             events, buffer = split_events(buffer)
             for event in events:
                 m = re.match(r": proteus retrievals=(\d+)", event)

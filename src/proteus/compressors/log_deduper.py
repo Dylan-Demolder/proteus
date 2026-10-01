@@ -102,6 +102,7 @@ def dedup_logs(content: str) -> tuple[str, dict]:
     # Build compressed output
     output_lines: list[str] = []
     seen_patterns: set[str] = set()
+    seen_raw: set[str] = set()
     total_repetitions_saved = 0
 
     # Headline stats first
@@ -140,9 +141,11 @@ def dedup_logs(content: str) -> tuple[str, dict]:
 
             total_repetitions_saved += count - 1
 
-        elif norm not in seen_patterns:
-            # Unique or low-repeat pattern — show it
-            seen_patterns.add(norm)
+        elif count < config.LOG_MIN_REPETITIONS and raw_line not in seen_raw:
+            # Too few repeats to collapse: show every distinct line. With
+            # numbers ignored in the pattern, two lines can share one
+            # ("served in 12ms", "served in 2950ms") and both matter.
+            seen_raw.add(raw_line)
             output_lines.append(raw_line)
 
     # Too long: first try collapsing repeated multi-line blocks. (This used to

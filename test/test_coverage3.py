@@ -141,6 +141,14 @@ async def _test_session_headers():
     check("generated session ID stable across turns", first == second)
     check("different conversations get different session IDs", first != third)
 
+    from proteus.proxy.server import _add_usage
+    total: dict = {}
+    for u in ({"prompt_tokens": 10, "prompt_tokens_details": {"cached_tokens": 4}},
+              {"prompt_tokens": 20, "prompt_tokens_details": {"cached_tokens": 6}}):
+        _add_usage(total, {"usage": u})
+    check("usage across retrieve rounds sums nested details (cached tokens)",
+          total == {"prompt_tokens": 30, "prompt_tokens_details": {"cached_tokens": 10}})
+
     plain = ProteusProxy(backend="openrouter")
     session = _mock_upstream(plain)
     await plain._process_and_forward(body, {})
