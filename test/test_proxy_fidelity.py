@@ -307,6 +307,51 @@ body, _, st = transform_request_body(retrieved)
 check("results of proteus_retrieve are not re-compressed",
       st["compressed"] == 0 and body["messages"][1]["content"] == payload)
 
+# Compression that saves little is not worth a possible retrieve round
+small_diff = "\n".join(
+    f"diff --git a/app/mod_{f}.py b/app/mod_{f}.py\nindex 1..2 100644\n--- a/app/mod_{f}.py\n"
+    f"+++ b/app/mod_{f}.py\n@@ -1,3 +1,3 @@\n import os\n-VERSION = '1.{f}'\n+VERSION = '2.{f}'\n"
+    f" print(VERSION)" for f in range(26))
+body, _, st = transform_request_body(openai_body(small_diff))
+check("little savings: tool output sent as is", st["compressed"] == 0
+      and body["messages"][2]["content"] == small_diff)
+config.update({"MIN_SAVINGS_PCT": 0})
+body, _, st = transform_request_body(openai_body(small_diff))
+check("min_savings_pct 0: small savings still compressed", st["compressed"] == 1)
+config.reset()
+
+# The marker says what was removed, so the model knows whether to retrieve
+from proteus.proxy.handler import _marker
+
+
+def mk(**st):
+    return _marker({"original_chars": 9000, "compressed_chars": 900, "hash": "abc", **st}, True)
+
+
+check("marker: lossless columnar says nothing dropped",
+      "nothing dropped" in mk(compressor="json_crusher", mode="columnar", original_rows=300))
+check("marker: row drop says how many rows are hidden",
+      "480 of 500 rows not shown" in mk(compressor="json_crusher", mode="row_drop", original_rows=500,
+                                        dropped_rows=480))
+check("marker: code says code unchanged", "code unchanged" in mk(compressor="code_python"))
+check("marker: logs say whether errors were kept",
+      "every error line kept" in mk(compressor="log_deduper", errors_dropped=0)
+      and "3 error lines not shown" in mk(compressor="log_deduper", errors_dropped=3))
+check("marker: still names the hash", 'proteus_retrieve(hash="abc")' in mk(compressor="unknown"))
+check("marker: mentions the query option", 'query="..."' in mk(compressor="unknown"))
+
+# The tools list must not change between an agent's turns: it starts the
+# prompt, and a change throws away the provider's cached prefix.
+agent_tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+turn1 = {"model": "m", "tools": agent_tools, "messages": [{"role": "user", "content": "go"}]}
+turn2 = {**openai_body(payload), "tools": agent_tools}
+t1, _, _ = transform_request_body(json.loads(json.dumps(turn1)))
+t2, _, _ = transform_request_body(json.loads(json.dumps(turn2)))
+check("tools list identical before and after the first compression", t1["tools"] == t2["tools"]
+      and RETRIEVE_TOOL_NAME in json.dumps(t1["tools"]))
+t0, _, _ = transform_request_body({"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+check("plain chat without tools gets no tool added", "tools" not in t0)
+
 section("5b. Proxy handler — retrieve helpers")
 
 h = ccr.store("alpha line\nBeta LINE\ngamma\n" + "x" * 100, "c", "text", {})
@@ -317,9 +362,41 @@ def call(args, name=RETRIEVE_TOOL_NAME, id_="t1"):
 
 
 check("run_retrieve returns the original", run_retrieve(call(json.dumps({"hash": h}))).startswith("alpha line"))
-q = run_retrieve(call(json.dumps({"hash": h, "query": "line"})))
-check("run_retrieve query filters lines (case-insensitive)", "1: alpha line" in q and "2: Beta LINE" in q
-      and "gamma" not in q)
+doc = "\n".join(f"filler {i}" for i in range(100))
+doc = doc.replace("filler 10\n", "alpha line\n").replace("filler 11\n", "Beta LINE\n")
+doc = doc.replace("filler 60\n", "The staging database listens on port 6543\n")
+doc = doc.replace("filler 80\n", '  "order_id": 2217,\n').replace("filler 81\n", '  "status": "refunded",\n')
+hd = ccr.store(doc, "c", "text", {})
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "line"})))
+check("run_retrieve query filters lines (case-insensitive)", "11: alpha line" in q and "12: Beta LINE" in q
+      and "port 6543" not in q)
+check("run_retrieve query shows context lines", "10- filler 9" in q and "14- filler 13" in q
+      and "15- filler 14" not in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "refunded"})))
+check("run_retrieve context carries the neighbouring field", '81-   "order_id": 2217,' in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "staging database port"})))
+check("run_retrieve multi-word query matches a line with every word", "61: The staging database" in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "order_id.: [0-9]+"})))
+check("run_retrieve query as a regex", "81: " in q and "refunded" in q and "port 6543" not in q)
+orders = [{"order_id": 5000 + i, "status": "refunded" if i == 7 else "shipped", "total": i,
+           **({"coupon": "SAVE8"} if i % 10 == 3 else {})} for i in range(60)]
+hj = ccr.store(json.dumps(orders, indent=2), "c", "json", {})
+q = run_retrieve(call(json.dumps({"hash": hj, "query": "SAVE8"})))
+check("run_retrieve on a JSON array returns whole records",
+      q.count('"order_id"') == 6 and '{"order_id": 5003, "status": "shipped", "total": 3, "coupon": "SAVE8"}' in q)
+q = run_retrieve(call(json.dumps({"hash": hj, "query": '"status": "refunded"'})))
+check("run_retrieve JSON query written as pretty-printed key/value", '"order_id": 5007' in q and q.count("order_id") == 1)
+q = run_retrieve(call(json.dumps({"hash": hj, "query": "zebra"})))
+check("run_retrieve JSON with no match anywhere says so", q.startswith("No lines"))
+hk = ccr.store(json.dumps({"next_cursor": "abc123", "items": orders}, indent=2), "c", "json", {})
+q = run_retrieve(call(json.dumps({"hash": hk, "query": "next_cursor"})))
+check("run_retrieve JSON object: a key outside the records is still found", '"next_cursor": "abc123"' in q)
+q = run_retrieve(call(json.dumps({"hash": hd, "query": "nothing Beta"})))
+check("run_retrieve falls back to lines with any word", "12: Beta LINE" in q)
+check("run_retrieve no match is a readable message",
+      run_retrieve(call(json.dumps({"hash": hd, "query": "zebra"}))).startswith("No lines"))
+check("run_retrieve returns the original when the query matches most of it",
+      run_retrieve(call(json.dumps({"hash": h, "query": "a"}))).startswith("alpha line"))
 check("run_retrieve unknown hash is a readable error", "no cached content" in run_retrieve(call('{"hash": "ffff"}')))
 check("run_retrieve bad arguments is a readable error", run_retrieve(call("not json")).startswith("Error"))
 
@@ -347,6 +424,107 @@ check("strip_retrieve_calls turns a retrieve-only turn into a plain stop",
 # =============================================================================
 #  6. Proxy server end-to-end (local mock upstream, no network)
 # =============================================================================
+section("5b2. Large Python files: skeleton and whole-function retrieve")
+
+import ast as _ast
+
+from proteus.compressors.code import skeleton_python
+
+big_py = "import os\n\nLIMIT = 100\n\n" + "\n".join(
+    f"@cached\ndef handler_{i}(request, timeout={i}):\n"
+    + "".join(f"    step_{j} = request.get({j})\n" for j in range(6))
+    + f"    return step_5 + {i}\n" for i in range(150)
+) + "\n\nclass Client:\n    retries = 3\n\n    def connect(self, host):\n" + "".join(
+    f"        self.part_{j} = host\n" for j in range(5)) + "        return KEEPALIVE_SECONDS_15\n"
+out, st = compress_tool_output(big_py)
+check("Skeleton: large Python file gets bodies hidden", st.get("mode") == "skeleton" and st["bodies_hidden"] == 151)
+check("Skeleton: signatures, decorators, constants, class attributes kept",
+      "def handler_77(request, timeout=77):" in out and "@cached" in out and "LIMIT = 100" in out
+      and "retries = 3" in out)
+check("Skeleton: bodies replaced by a line count", "step_3" not in out and "...  # proteus: 7 lines hidden" in out)
+check("Skeleton: output still parses as Python", _ast.parse(out) is not None)
+check("Skeleton: small bodies kept", skeleton_python("def f():\n    return 1\n") is None)
+shared = ("class A:\n    def f(self,\n          x): return [\n        1,\n        2,\n        3]\n\n"
+          "    def g(self):\n" + "        y = 1\n" * 4 + "        return y\n")
+sk = skeleton_python(shared)
+check("Skeleton: a body sharing its line with the signature is left alone, output parses",
+      sk is not None and "x): return [" in sk[0] and _ast.parse(sk[0]) is not None and sk[1] == 1)
+check("Skeleton: under the size threshold, comments-only stripping",
+      compress_tool_output(big_py[:5000])[1].get("mode") != "skeleton")
+hp = ccr.store(big_py, "c", "code_python", {})
+q = run_retrieve(call(json.dumps({"hash": hp, "query": "def connect"})))
+check("Retrieve in Python: the whole enclosing function comes back",
+      "def connect(self, host):" in q and "KEEPALIVE_SECONDS_15" in q and "whole enclosing function" in q
+      and "handler_" not in q)
+q = run_retrieve(call(json.dumps({"hash": hp, "query": "step_2 = request.get(2)"})))
+check("Retrieve in Python: hits inside many functions return each one", q.count("def handler_") == 150 or q == big_py)
+
+section("5c. Streamed replies: proteus_retrieve rounds")
+
+from proteus.proxy.stream import StreamRound, split_events
+
+
+def ev(**choice):
+    return "data: " + json.dumps({"id": "x", "choices": [choice]})
+
+
+def tc(index, name=None, args="", id_=None):
+    fn = {"arguments": args} if name is None else {"name": name, "arguments": args}
+    return {"index": index, **({"id": id_} if id_ else {}), "function": fn}
+
+
+events, rest = split_events('data: {"a":1}\r\n\r\ndata: {"b"')
+check("SSE: complete events split off, partial kept", events == ['data: {"a":1}'] and rest == 'data: {"b"')
+
+# A mixed turn: retrieve call at index 0, the client's own tool at index 1
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, "", "r0")]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(1, "read_file", '{"p"', "c1")]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, None, '{"hash":"h"}'), tc(1, None, ':1}')]}))
+out += rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+sent = [json.loads(e[6:]) for e in out]
+check("Stream: retrieve deltas held back, client tool renumbered to 0",
+      all(t["index"] == 0 and "proteus" not in json.dumps(t)
+          for c in sent for t in c["choices"][0]["delta"].get("tool_calls", [])) and len(sent) == 2)
+check("Stream: mixed turn gets no extra round", rnd.followup() is None)
+fin = json.loads(rnd.closing()[0][6:])
+check("Stream: mixed turn still finishes with tool_calls", fin["choices"][0]["finish_reason"] == "tool_calls")
+
+# Retrieve only, but the round limit is reached: the turn ends for the client
+rnd = StreamRound(can_retrieve=False)
+rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}', "r0")]}))
+rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+check("Stream: out of rounds, no followup", rnd.followup() is None)
+check("Stream: out of rounds, finish becomes stop", json.loads(rnd.closing()[0][6:])["choices"][0]["finish_reason"] == "stop")
+
+# The name arrives after the first delta: held until known, then never leaked
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [{"index": 0, "id": "r0", "type": "function"}]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}')]}))
+out += rnd.feed(ev(delta={}, finish_reason="tool_calls"))
+check("Stream: late-named retrieve call never reaches the client", out == [] and rnd.followup() is not None)
+rnd = StreamRound()
+out = rnd.feed(ev(delta={"tool_calls": [{"index": 0, "id": "c0", "type": "function"}]}))
+out += rnd.feed(ev(delta={"tool_calls": [tc(0, "read_file", "{}")]}))
+sent = [t for e in out for t in json.loads(e[6:])["choices"][0]["delta"]["tool_calls"]]
+check("Stream: late-named client call gets its held delta too",
+      [t.get("id") for t in sent] == ["c0", None] and all(t["index"] == 0 for t in sent))
+
+# Content riding in the finish chunk is sent, even when another round follows
+rnd = StreamRound()
+rnd.feed(ev(delta={"tool_calls": [tc(0, RETRIEVE_TOOL_NAME, '{"hash":"h"}', "r0")]}))
+out = rnd.feed(ev(delta={"content": "Let me check."}, finish_reason="tool_calls"))
+check("Stream: content in the finish chunk is relayed at once",
+      len(out) == 1 and json.loads(out[0][6:])["choices"][0]["delta"] == {"content": "Let me check."}
+      and json.loads(out[0][6:])["choices"][0]["finish_reason"] is None)
+
+rnd = StreamRound()
+check("Stream: comments and keep-alives pass through", rnd.feed(": ping") == [": ping"])
+check("Stream: [DONE] held for the end", rnd.feed("data: [DONE]") == [] and rnd.done)
+check("Stream: usage-only chunk held, usage recorded",
+      rnd.feed('data: {"choices":[],"usage":{"prompt_tokens":7,"prompt_tokens_details":{"cached_tokens":3}}}') == []
+      and rnd.usage == {"prompt_tokens": 7, "prompt_tokens_details": {"cached_tokens": 3}})
+
 section("6. Proxy server end-to-end")
 
 from aiohttp import ClientSession, web
@@ -357,17 +535,48 @@ from proteus.proxy.server import create_app
 async def e2e():
     received: list[dict] = []
     paths: list[str] = []
-    retrieve_once = {"armed": False}
+    retrieve_once = {"armed": False, "always": False, "json_for_stream": False}
 
     async def chat(request):
         body = await request.json()
         received.append(body)
+        if body.get("stream") and retrieve_once["json_for_stream"]:
+            # An upstream that ignores stream=true and calls our tool anyway
+            return web.json_response({"choices": [{"message": {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "r9", "type": "function", "function": {"name": RETRIEVE_TOOL_NAME, "arguments": "{}"}}]},
+                "finish_reason": "tool_calls"}]})
         if body.get("stream"):
             resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await resp.prepare(request)
-            await resp.write(b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+            if retrieve_once["armed"]:
+                retrieve_once["armed"] = False
+                content = body["messages"][-1]["content"]
+                args = json.dumps({"hash": re.search(r'hash="(\w+)"', content).group(1)})
+                # The call arrives split across chunks, the way providers stream it
+                for piece in (
+                    {"delta": {"role": "assistant", "content": "Checking. "}},
+                    {"delta": {"tool_calls": [{"index": 0, "id": "r1", "type": "function",
+                                               "function": {"name": RETRIEVE_TOOL_NAME, "arguments": ""}}]}},
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": args[:5]}}]}},
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": args[5:]}}]}},
+                    {"delta": {}, "finish_reason": "tool_calls"},
+                ):
+                    await resp.write(b"data: " + json.dumps({"id": "c1", "choices": [piece]}).encode() + b"\n\n")
+                await resp.write(b'data: {"id":"c1","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5}}\n\n')
+                await resp.write(b"data: [DONE]\n\n")
+                return resp
+            # Split an event across writes to exercise reassembly
+            await resp.write(b'data: {"id":"c2","choices":[{"delta":{"role":"assistant","con')
+            await resp.write(b'tent":"hi"}}]}\n\n')
+            await resp.write(b'data: {"id":"c2","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            await resp.write(b'data: {"id":"c2","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":10}}\n\n')
             await resp.write(b"data: [DONE]\n\n")
             return resp
+        if retrieve_once["always"] and body.get("tool_choice") != "none":
+            return web.json_response({"choices": [{"message": {"role": "assistant", "content": "Need more.",
+                "tool_calls": [{"id": f"r{len(received)}", "type": "function", "function": {
+                    "name": RETRIEVE_TOOL_NAME, "arguments": json.dumps({"hash": "ffff"})}}]},
+                "finish_reason": "tool_calls"}]})
         if retrieve_once["armed"]:
             retrieve_once["armed"] = False
             content = body["messages"][-1]["content"]
@@ -428,8 +637,31 @@ async def e2e():
         sent = received[-1]
         check("E2E stream: upstream receives the compressed tool message",
               len(sent["messages"][2]["content"]) < len(payload))
-        check("E2E stream: proteus_retrieve not offered", "tools" not in sent)
-        check("E2E stream: SSE relayed", r.status == 200 and "[DONE]" in text)
+        check("E2E stream: proteus_retrieve offered", RETRIEVE_TOOL_NAME in json.dumps(sent.get("tools")))
+        check("E2E stream: SSE relayed", r.status == 200 and '"content":"hi"' in text and "[DONE]" in text)
+
+        # Streamed: the model calls proteus_retrieve; the proxy answers it and streams the next round
+        retrieve_once["armed"] = True
+        n_before = len(received)
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload, stream=True)) as r:
+            text = await r.text()
+        followup = received[-1]["messages"]
+        chunks = [json.loads(line[6:]) for line in text.split("\n") if line.startswith("data: {")]
+        deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
+        check("E2E stream retrieve: proxy made a second upstream call", len(received) == n_before + 2)
+        check("E2E stream retrieve: second call carries the full original",
+              followup[-1]["role"] == "tool" and followup[-1]["content"] == payload
+              and followup[-2]["tool_calls"][0]["function"]["name"] == RETRIEVE_TOOL_NAME)
+        check("E2E stream retrieve: client sees both rounds' text, no retrieve call",
+              "".join(d.get("content", "") for d in deltas) == "Checking. hi"
+              and RETRIEVE_TOOL_NAME not in text)
+        check("E2E stream retrieve: one finish, one role, one [DONE]",
+              [c["choices"][0].get("finish_reason") for c in chunks if c.get("choices")].count("stop") == 1
+              and "tool_calls" not in text and sum("role" in d for d in deltas) == 1
+              and text.count("[DONE]") == 1)
+        check("E2E stream retrieve: usage summed and sent once",
+              [c["usage"] for c in chunks if "usage" in c] == [{"prompt_tokens": 1100, "completion_tokens": 15}])
+        check("E2E stream retrieve: count in a trailing SSE comment", ": proteus retrievals=1" in text)
 
         # The model calls proteus_retrieve: the proxy answers it and asks again
         retrieve_once["armed"] = True
@@ -443,11 +675,34 @@ async def e2e():
         check("E2E retrieve: client gets the final answer, not the tool call",
               data["choices"][0]["message"]["content"] == "done"
               and "tool_calls" not in data["choices"][0]["message"])
+        check("E2E retrieve: count reported in X-Proteus-Retrievals", r.headers.get("X-Proteus-Retrievals") == "1")
         check("E2E retrieve: usage summed across rounds",
               data["usage"] == {"prompt_tokens": 1100, "completion_tokens": 15, "total_tokens": 1115})
         async with client.get(f"{base}/readyz") as r:
             ready = await r.json()
-        check("E2E retrieve: counted in /readyz", ready["stats"]["retrievals_served"] == 1)
+        check("E2E retrieve: counted in /readyz (streamed and not)", ready["stats"]["retrievals_served"] == 2)
+
+        # A model that keeps asking for retrieves gets one final round where it must answer
+        retrieve_once["always"] = True
+        n_before = len(received)
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload)) as r:
+            data = await r.json()
+        retrieve_once["always"] = False
+        last = received[-1]
+        check("E2E retrieve limit: final round forces a text answer",
+              len(received) == n_before + 4 and last.get("tool_choice") == "none"
+              and all(b.get("tool_choice") != "none" for b in received[n_before:-1]))
+        check("E2E retrieve limit: model told to say what it couldn't check",
+              "last retrieve for this turn" in last["messages"][-1]["content"])
+        check("E2E retrieve limit: client gets the answer", data["choices"][0]["message"]["content"] == "done")
+
+        # stream=true answered with plain JSON: our retrieve call still never reaches the client
+        retrieve_once["json_for_stream"] = True
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload, stream=True)) as r:
+            data = await r.json()
+        retrieve_once["json_for_stream"] = False
+        check("E2E stream answered with JSON: retrieve calls stripped",
+              RETRIEVE_TOOL_NAME not in json.dumps(data) and data["choices"][0]["message"]["content"] == "ok")
 
         # Pass-through routes: /v1 prefix is not doubled
         async with client.get(f"{base}/v1/models") as r:
@@ -474,6 +729,18 @@ asyncio.run(e2e())
 # =============================================================================
 section("7. Routing & log fidelity")
 
+
+from proteus.compressors.search import compress_search as _cs
+
+hits = [f"src/svc_{f:02d}.py:{10 + j * 7}:    timeout = get_setting('timeout_{f}_{j}')"
+        for f in range(40) for j in range(8)]
+hits.insert(5, "src/lonely.py:3:    timeout = 4711  # hard-coded")
+out, st = _cs("\n".join(hits))
+check("Search: a lone unusual match in a one-match file is kept", "timeout = 4711" in out)
+check("Search: hidden matches are counted, all files accounted for",
+      f"{321 - st['compressed_matches']} more matches not shown, {41 - st['compressed_files']} more files" in out)
+check("Search: hidden matches summarized by shape", "× `timeout = get_setting('…')`" in out)
+check("Search: stats say no unusual match was hidden", st["rare_hidden"] == 0)
 from proteus.compressors.search import compress_search
 from proteus.router import ContentType, detect_content_type
 
@@ -523,9 +790,17 @@ check("a wrong type hint never yields empty output", out.strip() != "")
 
 section("7b. Log truncation keeps errors")
 
+def word(i: int) -> str:
+    """A distinct letters-only token, so routine lines differ in more than numbers."""
+    return "".join(chr(97 + (i // 26 ** k) % 26) for k in range(3))
+
+
+def ts(i: int) -> str:
+    return f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z "
+
+
 many = "\n".join(
-    f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z "
-    + (f"ERROR job {i} failed: exit {i}" if i % 50 == 25 else f"INFO job {i} finished in {i * 3}ms")
+    ts(i) + (f"ERROR job {i} failed: exit {i}" if i % 50 == 25 else f"INFO job {word(i)} finished")
     for i in range(1000)
 )
 out, stats = compress_tool_output(many)
@@ -533,6 +808,27 @@ check("long log is compressed", stats["was_compressed"])
 check("errors from the truncated middle survive",
       all(f"ERROR job {i} failed" in out for i in range(25, 1000, 50)))
 check("omitted runs are marked", "lines omitted" in out)
+check("log stats: no errors dropped", stats["errors_dropped"] == 0)
+check("omitted runs say no errors were dropped", "no errors or stack frames among them" in out)
+flood = "\n".join(ts(i) + (f"ERROR e{i}" if 300 <= i < 600 else f"INFO r {word(i)}") for i in range(900))
+fstats = compress_tool_output(flood)[1]
+check("log stats: errors past the cap are counted", fstats.get("errors_dropped") == 100)
+
+# Routine lines that differ only in numbers collapse to one pattern, and an
+# outlier value in them is kept (a model asked for the slowest request).
+timed = "\n".join(ts(i) + (f"ERROR order {7000 + i} failed" if i % 100 == 7
+                            else f"INFO request {i} served in {2950 if i == 577 else 10 + i % 50}ms")
+                   for i in range(1000))
+out, stats = compress_tool_output(timed)
+check("Logs: lines differing only in numbers collapse", "[x9" in out and stats["compressed_chars"] < 2500)
+check("Logs: the outlier value is kept", "[outlier]" in out and "request 577 served in 2950ms" in out)
+check("Logs: error lines keep their numbers (each order id kept)",
+      all(f"order {7000 + i} failed" in out for i in range(7, 1000, 100)))
+from proteus.compressors.log_deduper import _truncate_keeping_errors
+
+capped = _truncate_keeping_errors(["x"] * 4 + ["ERROR a", "ERROR b", "ERROR c"] + ["x"] * 4, 2)
+check("omitted runs that dropped errors don't claim otherwise",
+      "ERROR c" not in capped and "... 4 lines omitted ..." in capped)
 
 
 # =============================================================================

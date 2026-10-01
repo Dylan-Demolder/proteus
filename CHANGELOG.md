@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Log lines that differed only in their numbers were never deduplicated.**
+  "request 7 served in 12ms" and "request 8 served in 40ms" counted as
+  different patterns, so a 1,500-line access log came out as "1500 unique
+  patterns", and the deduper fell back to keeping head and tail. That
+  hid a 2,950 ms request in the middle. Routine lines (not errors, warnings
+  or stack frames) now group with their numbers ignored. Each group shows a
+  count, the first and last line, and up to three `[outlier]` lines whose
+  values are at least 5× the group's median. Error lines keep their numbers,
+  so every failed order id is still listed. The `log_errors` scenario now
+  compresses 63,816 → 1,252 chars, and the agent eval's log 80,289 → 1,895.
+- **Retrieve queries on JSON split records.** A line match for
+  `"coupon": "SAVE8"` came back without the `order_id` three lines above it,
+  so models asked again and ran out of rounds. For a JSON array of objects,
+  a query now returns the matching records whole, one per line.
+- **Running out of retrieve rounds left the client without an answer.** The
+  turn ended mid-thought ("Now I need the order ids..."). After the last
+  allowed retrieve, the proxy now asks once more with `tool_choice: "none"`.
+  The last retrieve result tells the model it was the last one, and to say
+  what it couldn't check instead of guessing. Applies to streamed and
+  non-streamed replies.
+- **Adding `proteus_retrieve` mid-conversation broke prompt caching.** The
+  tool was added only once something had been compressed. An agent's first
+  turn usually has nothing to compress, so the tools list changed on turn two.
+  The tools list sits at the start of the prompt, so the provider's cached
+  prefix was lost for the rest of the conversation. The tool is now offered
+  on every request that carries tools. In the agent evaluation, DeepSeek's
+  cache hit rate through the proxy went from 50% to 57% (61% direct).
+- **OpenCode Go rejected every request through the proxy.** It now requires
+  an `x-opencode-session` header (400 `MissingSessionID` without one) and
+  asks clients to identify themselves. The proxy forwarded only `X-Title` and
+  `HTTP-Referer`, so a client's session header and User-Agent were dropped.
+  Session headers (`x-opencode-*`, `session_id`, `x-…-session-id`) and
+  `User-Agent` are now forwarded; without a client User-Agent the proxy sends
+  `proteus/<version>`. If the client sends no session header, the
+  `opencode-go` backend adds one derived from the conversation's opening
+  messages, so it stays the same across turns.
+- **`proteus_retrieve` queries rarely matched.** A query had to occur
+  verbatim in a single line, but models write `"staging database port"` or
+  `"timeout = [0-9]"`. Queries now match as text, then as a regex, then by
+  every word, then by any word. Matches come with two lines of context
+  (a lone `"status": "refunded"` line is useless without the `order_id`
+  above it), and the full original comes back when the filter wouldn't be
+  shorter.
+- **Compressed output didn't say what was removed.** With only "compressed
+  23,138→6,609 chars", careful models re-fetched content that was all there.
+  The marker now says what changed ("comments and docstrings removed, code
+  unchanged", "all 300 rows kept in columnar form", "every error line kept",
+  "480 of 500 rows not shown") and mentions the `query` option. The log
+  deduper's omission markers say when no errors were among the omitted lines.
+- **Search results miscounted and hid the odd match out.** When the match
+  cap was reached, "N more files" left out every file below the top 15, and
+  the stats reported files that were never shown. Scoring used keywords, so
+  when the search term was itself a keyword (`timeout`), every match scored
+  the same. Matches with an unusual shape are now kept first, and the hidden
+  ones are summarized by shape (`289× timeout = get_setting('…')`), so the
+  model can see nothing unusual was left out.
+- **Compression that saves little is skipped.** A 20% cut to a diff dropped
+  the file the question was about, and fetching it back cost more than was
+  saved. New `min_savings_pct` (default 25): the proxy sends the original
+  when compressing would save less.
+
 - **`--config` did nothing.** `proteus proxy --config file.yaml` printed the
   path and never read the file. `pyyaml` was a dependency nothing imported,
   and `config.yaml` claimed it was hot-reloadable. The file is now loaded and
@@ -52,8 +113,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   results now end with a marker naming the hash. For non-streaming requests,
   the proxy answers the model's retrieve calls from the cache and asks again,
   so the client never sees the tool, and token usage is summed across rounds.
-  Streaming requests don't get the tool, because the proxy can't intercept a
-  stream. The optional `query` argument (filter to matching lines) is now
+  (Streamed replies got the tool later in this release; see Added.) The optional `query` argument (filter to matching lines) is now
   implemented.
 - **The code compressor no longer deletes code.** In JS/TS/Go/Rust, a line
   with an inline `/* comment */` made every following line disappear up to the
@@ -122,6 +182,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skeletons for large Python files.** Comment stripping saves only 10–25% on
+  real source (measured on aiohttp), under the `min_savings_pct` floor, so
+  most real files went through unchanged. Python files of 20,000+ chars
+  (`code.skeleton_min_chars`) are now sent with function bodies of 4+ lines
+  (`code.skeleton_min_body_lines`) replaced by `...  # proteus: N lines
+  hidden`. Signatures, decorators, constants and class attributes are kept,
+  and the result still parses. A `proteus_retrieve` query matching inside a
+  function returns the whole function. On the aiohttp agent tasks, cost
+  through Proteus went from −19% to −29% (DeepSeek) and from 0% to −26% (MiMo),
+  still 30/30 correct.
+- `agent_eval.py --workspace aiohttp`: the same agent loop over the installed
+  aiohttp source, with five tasks whose answers are read from the source.
+- **`proteus_retrieve` for streamed replies.** Most agents stream, and until
+  now a streamed request was compressed without the retrieve tool, so dropped
+  content was out of reach. The proxy now relays each streamed round as it
+  arrives and holds back the retrieve calls. It answers them from the cache
+  and streams the next round into the same response. Usage is summed across
+  rounds, and the retrieve count arrives as a trailing SSE comment
+  (`: proteus retrievals=N`). New module `proteus.proxy.stream`.
+- `benchmarks/agent_eval.py`: multi-turn agent loop over a synthetic
+  repository, with tools executed by the harness, streaming, per-conversation
+  sessions, cached-token accounting and estimated cost at the model's prices.
+- `X-Proteus-Retrievals` response header: `proteus_retrieve` calls the proxy
+  answered for that request.
+- `benchmarks/live_eval.py`: `--repeat` and `--concurrency`, results
+  aggregated per scenario, and a separate outcome for a model that re-runs
+  its own tool instead of answering. Sends a session ID and User-Agent.
 - `proteus.config.configure()`, `update()`, `reset()`, `current()` and
   `DEFAULTS`; `proteus.profiles.use_profile()`.
 - `test/test_config.py` (40 tests).

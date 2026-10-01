@@ -13,6 +13,7 @@ from typing import Any
 
 # ── Routing ──
 MIN_COMPRESS_CHARS = 3000  # Skip content smaller than this (no point compressing short strings)
+MIN_SAVINGS_PCT = 25       # Proxy: send the original if compression saves less than this
 
 # ── JSON Crusher ──
 JSON_MAX_ROWS_BEFORE_DROP = 200  # Start row-dropping when array exceeds this
@@ -34,6 +35,8 @@ CODE_MAX_FUNCTION_LINES = 15
 CODE_STRIP_COMMENTS = True
 CODE_STRIP_BLANK_LINES = True
 CODE_MAX_FILE_LINES = 200
+CODE_SKELETON_MIN_CHARS = 20000   # Python this long: hide function bodies, keep signatures (0 = never)
+CODE_SKELETON_MIN_BODY_LINES = 4  # Shorter bodies stay visible
 
 # ── File Lister ──
 LS_STRIP_PERMS = True             # Remove -rw-r--r-- columns

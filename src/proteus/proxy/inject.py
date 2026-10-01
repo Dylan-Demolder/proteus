@@ -24,8 +24,9 @@ def create_retrieve_tool_definition() -> dict[str, Any]:
             "name": RETRIEVE_TOOL_NAME,
             "description": (
                 "Retrieve original uncompressed content that was compressed by Proteus to save tokens. "
-                "Use this when you need more data than what's shown in the compressed tool results. "
-                "The hash is provided in compression markers."
+                "Use this when the answer is not in the compressed tool result. "
+                "The hash is provided in compression markers. "
+                "Pass a query to get only the matching lines instead of everything."
             ),
             "parameters": {
                 "type": "object",
@@ -37,8 +38,8 @@ def create_retrieve_tool_definition() -> dict[str, Any]:
                     "query": {
                         "type": "string",
                         "description": (
-                            "Optional search query to filter results. "
-                            "If provided, only returns items matching the query. "
+                            "Optional case-insensitive text or regular expression. Returns every "
+                            "matching line of the original, with line numbers and surrounding lines. "
                             "If omitted, returns all original content."
                         ),
                     },

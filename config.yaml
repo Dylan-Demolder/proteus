@@ -14,6 +14,7 @@
 
 # ── Routing ──
 min_compress_chars: 3000
+min_savings_pct: 25   # proxy sends the original when compression saves less
 
 # ── JSON Crusher ──
 json:
@@ -28,6 +29,11 @@ logs:
   min_repetitions: 3
   keep_first_last: true
   max_lines_total: 200
+
+# ── Code ──
+code:
+  skeleton_min_chars: 20000     # Python this long: hide function bodies, keep signatures (0 = never)
+  skeleton_min_body_lines: 4    # shorter bodies stay visible
 
 # ── File Listing ──
 file_listing:

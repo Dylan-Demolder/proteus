@@ -125,3 +125,5 @@ jobs:
         run: python test/benchmark_all.py
       - name: Live-eval scenarios (dry run, no API calls)
         run: python benchmarks/live_eval.py --dry-run
+      - name: Agent-eval workspace (offline, no API calls)
+        run: python benchmarks/agent_eval.py --show-workspace

@@ -19,7 +19,7 @@ Usage:
 """
 
 from . import ccr, config, history, profiles
-from .compressors.code import compress_file_listing, strip_code
+from .compressors.code import compress_file_listing, skeleton_python, strip_code
 from .compressors.json_crusher import crush_json
 from .compressors.log_deduper import dedup_logs
 from .router import ContentType, detect_content_type, should_compress
@@ -114,6 +114,14 @@ def compress_tool_output(
     elif detected == ContentType.CODE_PYTHON:
         compressed = strip_code(content, "python")
         compressor = "code_python"
+        if config.CODE_SKELETON_MIN_CHARS and len(content) >= config.CODE_SKELETON_MIN_CHARS:
+            # Comment stripping alone saves 10-25% on real source files. A
+            # large file's bodies are hidden instead; proteus_retrieve with a
+            # function's name returns the whole function.
+            skeleton = skeleton_python(compressed, config.CODE_SKELETON_MIN_BODY_LINES)
+            if skeleton is not None:
+                compressed, stats["bodies_hidden"] = skeleton
+                stats["mode"] = "skeleton"
         compressor_stats = {}
 
     elif detected in (ContentType.CODE_JS, ContentType.CODE_TS,

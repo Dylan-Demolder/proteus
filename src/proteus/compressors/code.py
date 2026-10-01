@@ -7,6 +7,7 @@ Two modes:
 FileLister — compact ls -la output (lossless).
 """
 
+import ast
 import io
 import re
 import tokenize
@@ -220,6 +221,69 @@ def _strip_generic_comments(code: str, char_literals: bool = False) -> str:
     if in_block:
         return code
     return _collapse_blank_lines(kept, protected)
+
+
+def _function_spans(tree: ast.AST) -> list[tuple[int, int, int, int]]:
+    """(def line, first body line, last line, body column) of the outermost
+    functions, looking inside classes but not inside functions."""
+    spans: list[tuple[int, int, int, int]] = []
+    stack = list(ast.iter_child_nodes(tree))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.body and node.end_lineno and node.body[0].lineno > node.lineno:
+                spans.append((node.lineno, node.body[0].lineno, node.end_lineno, node.body[0].col_offset))
+        elif isinstance(node, ast.ClassDef):
+            stack.extend(node.body)
+    return sorted(spans)
+
+
+def skeleton_python(code: str, min_body_lines: int = 4) -> tuple[str, int] | None:
+    """Python with function bodies replaced by a line count.
+
+    Keeps imports, module and class-level statements, decorators and full
+    signatures. Each body of at least ``min_body_lines`` lines becomes one
+    ``... # proteus: N lines hidden`` line, which still parses. Returns
+    (skeleton, bodies hidden), or None if the code doesn't parse.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None
+    lines = code.split("\n")
+    out: list[str] = []
+    hidden = 0
+    pos = 0  # next line index (0-based) not yet copied
+    for _, body_start, end, body_col in _function_spans(tree):
+        n = end - body_start + 1
+        first = lines[body_start - 1]
+        if n < min_body_lines or body_start - 1 < pos or first[:body_col].strip():
+            # Too short, overlapping, or the body starts on a line it shares
+            # with the signature ("x): return [..."): replacing that line
+            # would cut the signature off.
+            continue
+        out.extend(lines[pos:body_start - 1])
+        indent = first[: len(first) - len(first.lstrip())]
+        out.append(f"{indent}...  # proteus: {n} lines hidden")
+        pos = end
+        hidden += 1
+    out.extend(lines[pos:])
+    return ("\n".join(out), hidden) if hidden else None
+
+
+def python_blocks(code: str) -> list[tuple[int, int]] | None:
+    """(first, last) line numbers, 1-based and including decorators, of every
+    function in the code at any depth; None if it isn't Python."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None
+    blocks = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno:
+            first = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            blocks.append((first, node.end_lineno))
+    return blocks
 
 
 def compress_file_listing(content: str) -> tuple[str, dict]:
