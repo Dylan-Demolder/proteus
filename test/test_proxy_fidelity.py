@@ -378,6 +378,16 @@ q = run_retrieve(call(json.dumps({"hash": hd, "query": "staging database port"})
 check("run_retrieve multi-word query matches a line with every word", "61: The staging database" in q)
 q = run_retrieve(call(json.dumps({"hash": hd, "query": "order_id.: [0-9]+"})))
 check("run_retrieve query as a regex", "81: " in q and "refunded" in q and "port 6543" not in q)
+orders = [{"order_id": 5000 + i, "status": "refunded" if i == 7 else "shipped", "total": i,
+           **({"coupon": "SAVE8"} if i % 10 == 3 else {})} for i in range(60)]
+hj = ccr.store(json.dumps(orders, indent=2), "c", "json", {})
+q = run_retrieve(call(json.dumps({"hash": hj, "query": "SAVE8"})))
+check("run_retrieve on a JSON array returns whole records",
+      q.count('"order_id"') == 6 and '{"order_id": 5003, "status": "shipped", "total": 3, "coupon": "SAVE8"}' in q)
+q = run_retrieve(call(json.dumps({"hash": hj, "query": '"status": "refunded"'})))
+check("run_retrieve JSON query written as pretty-printed key/value", '"order_id": 5007' in q and q.count("order_id") == 1)
+q = run_retrieve(call(json.dumps({"hash": hj, "query": "nothing Beta"})))
+check("run_retrieve JSON with no matching record says so", q.startswith("No records"))
 q = run_retrieve(call(json.dumps({"hash": hd, "query": "nothing Beta"})))
 check("run_retrieve falls back to lines with any word", "12: Beta LINE" in q)
 check("run_retrieve no match is a readable message",
@@ -466,7 +476,7 @@ from proteus.proxy.server import create_app
 async def e2e():
     received: list[dict] = []
     paths: list[str] = []
-    retrieve_once = {"armed": False}
+    retrieve_once = {"armed": False, "always": False}
 
     async def chat(request):
         body = await request.json()
@@ -498,6 +508,11 @@ async def e2e():
             await resp.write(b'data: {"id":"c2","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":10}}\n\n')
             await resp.write(b"data: [DONE]\n\n")
             return resp
+        if retrieve_once["always"] and body.get("tool_choice") != "none":
+            return web.json_response({"choices": [{"message": {"role": "assistant", "content": "Need more.",
+                "tool_calls": [{"id": f"r{len(received)}", "type": "function", "function": {
+                    "name": RETRIEVE_TOOL_NAME, "arguments": json.dumps({"hash": "ffff"})}}]},
+                "finish_reason": "tool_calls"}]})
         if retrieve_once["armed"]:
             retrieve_once["armed"] = False
             content = body["messages"][-1]["content"]
@@ -603,6 +618,20 @@ async def e2e():
             ready = await r.json()
         check("E2E retrieve: counted in /readyz (streamed and not)", ready["stats"]["retrievals_served"] == 2)
 
+        # A model that keeps asking for retrieves gets one final round where it must answer
+        retrieve_once["always"] = True
+        n_before = len(received)
+        async with client.post(f"{base}/v1/chat/completions", json=openai_body(payload)) as r:
+            data = await r.json()
+        retrieve_once["always"] = False
+        last = received[-1]
+        check("E2E retrieve limit: final round forces a text answer",
+              len(received) == n_before + 4 and last.get("tool_choice") == "none"
+              and all(b.get("tool_choice") != "none" for b in received[n_before:-1]))
+        check("E2E retrieve limit: model told to say what it couldn't check",
+              "last retrieve for this turn" in last["messages"][-1]["content"])
+        check("E2E retrieve limit: client gets the answer", data["choices"][0]["message"]["content"] == "done")
+
         # Pass-through routes: /v1 prefix is not doubled
         async with client.get(f"{base}/v1/models") as r:
             await r.read()
@@ -689,9 +718,17 @@ check("a wrong type hint never yields empty output", out.strip() != "")
 
 section("7b. Log truncation keeps errors")
 
+def word(i: int) -> str:
+    """A distinct letters-only token, so routine lines differ in more than numbers."""
+    return "".join(chr(97 + (i // 26 ** k) % 26) for k in range(3))
+
+
+def ts(i: int) -> str:
+    return f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z "
+
+
 many = "\n".join(
-    f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z "
-    + (f"ERROR job {i} failed: exit {i}" if i % 50 == 25 else f"INFO job {i} finished in {i * 3}ms")
+    ts(i) + (f"ERROR job {i} failed: exit {i}" if i % 50 == 25 else f"INFO job {word(i)} finished")
     for i in range(1000)
 )
 out, stats = compress_tool_output(many)
@@ -700,11 +737,21 @@ check("errors from the truncated middle survive",
       all(f"ERROR job {i} failed" in out for i in range(25, 1000, 50)))
 check("omitted runs are marked", "lines omitted" in out)
 check("log stats: no errors dropped", stats["errors_dropped"] == 0)
-flood = "\n".join(f"2026-09-30T10:{i // 60 % 60:02d}:{i % 60:02d}Z " + (f"ERROR e{i}" if 300 <= i < 600 else f"INFO r{i}")
-                  for i in range(900))
+check("omitted runs say no errors were dropped", "no errors or stack frames among them" in out)
+flood = "\n".join(ts(i) + (f"ERROR e{i}" if 300 <= i < 600 else f"INFO r {word(i)}") for i in range(900))
 fstats = compress_tool_output(flood)[1]
 check("log stats: errors past the cap are counted", fstats.get("errors_dropped") == 100)
-check("omitted runs say no errors were dropped", "no errors or stack frames among them" in out)
+
+# Routine lines that differ only in numbers collapse to one pattern, and an
+# outlier value in them is kept (a model asked for the slowest request).
+timed = "\n".join(ts(i) + (f"ERROR order {7000 + i} failed" if i % 100 == 7
+                            else f"INFO request {i} served in {2950 if i == 577 else 10 + i % 50}ms")
+                   for i in range(1000))
+out, stats = compress_tool_output(timed)
+check("Logs: lines differing only in numbers collapse", "[x9" in out and stats["compressed_chars"] < 2500)
+check("Logs: the outlier value is kept", "[outlier]" in out and "request 577 served in 2950ms" in out)
+check("Logs: error lines keep their numbers (each order id kept)",
+      all(f"order {7000 + i} failed" in out for i in range(7, 1000, 100)))
 from proteus.compressors.log_deduper import _truncate_keeping_errors
 
 capped = _truncate_keeping_errors(["x"] * 4 + ["ERROR a", "ERROR b", "ERROR c"] + ["x"] * 4, 2)

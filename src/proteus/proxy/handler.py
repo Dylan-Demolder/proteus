@@ -216,26 +216,12 @@ def _search(original: str, content_hash: str, query: str) -> str:
     what the model needs (a JSON field one line up, a diff's file header),
     so neighbouring lines come along.
     """
+    records = _json_records(original)
+    if records is not None:
+        return _search_records(original, records, content_hash, query)
+
     lines = original.split("\n")
-    folded = [line.casefold() for line in lines]
-    needle = query.casefold()
-    words = needle.split()
-    hits = [n for n, line in enumerate(folded) if needle in line]
-    how = "containing"
-    if not hits:
-        try:
-            pattern = re.compile(query, re.IGNORECASE)
-        except re.error:
-            pattern = None
-        if pattern is not None:
-            hits = [n for n, line in enumerate(lines) if pattern.search(line)]
-            how = "matching the regex"
-    if not hits and len(words) > 1:
-        hits = [n for n, line in enumerate(folded) if all(w in line for w in words)]
-        how = "containing every word of"
-        if not hits:
-            hits = [n for n, line in enumerate(folded) if any(w in line for w in words)]
-            how = "containing any word of"
+    hits, how = _match(lines, query)
     if not hits:
         return f"No lines in {content_hash} match {query!r}; nothing else in the original matches either."
 
@@ -255,6 +241,74 @@ def _search(original: str, content_hash: str, query: str) -> str:
         prev = n
     result = "\n".join(out)
     # The query matched most of it: the original is no longer and easier to read.
+    return original if len(result) >= len(original) else result
+
+
+def _match(texts: list[str], query: str) -> tuple[list[int], str]:
+    """Indexes of the texts matching query, and how they matched.
+
+    Tried in order: the whole query as text, as a regex, every word, any word.
+    """
+    folded = [t.casefold() for t in texts]
+    needle = query.casefold()
+    words = needle.split()
+    hits = [n for n, t in enumerate(folded) if needle in t]
+    if hits:
+        return hits, "containing"
+    try:
+        pattern = re.compile(query, re.IGNORECASE)
+    except re.error:
+        pattern = None
+    if pattern is not None:
+        hits = [n for n, t in enumerate(texts) if pattern.search(t)]
+        if hits:
+            return hits, "matching the regex"
+    if len(words) > 1:
+        hits = [n for n, t in enumerate(folded) if all(w in t for w in words)]
+        if hits:
+            return hits, "containing every word of"
+        hits = [n for n, t in enumerate(folded) if any(w in t for w in words)]
+        if hits:
+            return hits, "containing any word of"
+    return [], ""
+
+
+def _json_records(original: str) -> list | None:
+    """The records of a JSON array of objects (top level, or the largest
+    array under a top-level object), or None if the original isn't one."""
+    text = original.lstrip()
+    if not text.startswith(("[", "{")):
+        return None
+    try:
+        data = json.loads(original)
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        arrays = [v for v in data.values() if isinstance(v, list)]
+        data = max(arrays, key=len) if arrays else None
+    if not isinstance(data, list) or not data or not all(isinstance(r, dict) for r in data):
+        return None
+    return data
+
+
+def _search_records(original: str, records: list, content_hash: str, query: str) -> str:
+    """Whole matching records of a JSON array, one per line.
+
+    Line matches split records: the line with "coupon": "SAVE8" comes back
+    without the order_id three lines above it, and the model has to ask
+    again (seen live). Each record is matched as `"key": value` text, the way
+    it reads in the pretty-printed original.
+    """
+    texts = [json.dumps(r, ensure_ascii=False) for r in records]
+    hits, how = _match(texts, query)
+    if not hits:
+        return f"No records in {content_hash} match {query!r}; nothing else in the original matches either."
+    # No record numbers: a number in front of each record sits right next to
+    # its id field and invites misreading one for the other.
+    out = [f"[All {len(hits)} of {len(records)} records of the full original {how} {query!r}, "
+           f"one JSON object per line]"]
+    out += [texts[n] for n in hits]
+    result = "\n".join(out)
     return original if len(result) >= len(original) else result
 
 

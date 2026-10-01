@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Log lines that differed only in their numbers were never deduplicated.**
+  "request 7 served in 12ms" and "request 8 served in 40ms" counted as
+  different patterns, so a 1,500-line access log came out as "1500 unique
+  patterns", and the deduper fell back to keeping head and tail. That
+  hid a 2,950 ms request in the middle. Routine lines (not errors, warnings
+  or stack frames) now group with their numbers ignored. Each group shows a
+  count, the first and last line, and up to three `[outlier]` lines whose
+  values are at least 5× the group's median. Error lines keep their numbers,
+  so every failed order id is still listed. The `log_errors` scenario now
+  compresses 63,816 → 1,252 chars, and the agent eval's log 80,289 → 1,895.
+- **Retrieve queries on JSON split records.** A line match for
+  `"coupon": "SAVE8"` came back without the `order_id` three lines above it,
+  so models asked again and ran out of rounds. For a JSON array of objects,
+  a query now returns the matching records whole, one per line.
+- **Running out of retrieve rounds left the client without an answer.** The
+  turn ended mid-thought ("Now I need the order ids..."). After the last
+  allowed retrieve, the proxy now asks once more with `tool_choice: "none"`.
+  The last retrieve result tells the model it was the last one, and to say
+  what it couldn't check instead of guessing. Applies to streamed and
+  non-streamed replies.
 - **Adding `proteus_retrieve` mid-conversation broke prompt caching.** The
   tool was added only once something had been compressed. An agent's first
   turn usually has nothing to compress, so the tools list changed on turn two.

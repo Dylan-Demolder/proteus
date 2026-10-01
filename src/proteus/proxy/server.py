@@ -59,6 +59,23 @@ SSE_HEADERS = {
 FORWARD_HEADERS = ("X-Title", "HTTP-Referer", "User-Agent")
 
 
+def _answer_now(body: dict) -> dict:
+    """The last round after the retrieve limit: the model must answer in text.
+
+    Without this, a model still asking for proteus_retrieve when the limit is
+    reached leaves the client with a turn that ends mid-thought ("Now I need
+    the order ids...") and no answer. Forced to answer, a model may fill gaps
+    by guessing, so the last retrieve result says so. These messages exist
+    only between the proxy and the model; the client never sees them.
+    """
+    messages = list(body.get("messages") or [])
+    if messages and messages[-1].get("role") == "tool" and isinstance(messages[-1].get("content"), str):
+        messages[-1] = {**messages[-1], "content": messages[-1]["content"] + (
+            "\n[proteus: that was the last retrieve for this turn. Answer from what you have, "
+            "and say plainly what you could not check rather than guessing.]")}
+    return {**body, "messages": messages, "tool_choice": "none"}
+
+
 def _is_session_header(name: str) -> bool:
     """x-opencode-session, session_id (Codex), x-claude-code-session-id, ..."""
     name = name.lower().replace("_", "-")
@@ -255,6 +272,8 @@ class ProteusProxy:
                     break
                 assistant, results = followup
                 body = {**body, "messages": [*body["messages"], assistant, *results]}
+                if round_no + 1 >= MAX_RETRIEVE_ROUNDS:
+                    body = _answer_now(body)
                 retrievals += len(results)
                 self._stats["retrievals_served"] += len(results)
             if usage:
@@ -390,6 +409,8 @@ class ProteusProxy:
             _add_usage(usage, response_data)
             assistant, results = followup
             mod_body = {**mod_body, "messages": [*mod_body["messages"], assistant, *results]}
+            if retrieve_round >= MAX_RETRIEVE_ROUNDS:
+                mod_body = _answer_now(mod_body)
             self._stats["retrievals_served"] += len(results)
             retrievals += len(results)
 

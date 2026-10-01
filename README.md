@@ -203,12 +203,12 @@ python benchmarks/live_eval.py --model <model-id> --repeat 20 --concurrency 10  
 python benchmarks/live_eval.py --dry-run          # offline: which answers survive compression
 ```
 
-Latest results, 20 trials of each scenario per mode ([full findings](docs/live-eval-results.md)):
+Latest results, 10 trials of each scenario per mode ([full findings](docs/live-eval-results.md)):
 
 | model | direct correct | Proteus correct | prompt tokens, direct → Proteus |
 |---|---|---|---|
-| deepseek-v4.1-flash | 122/140 | 131/140 | 1.62M → 0.64M (−61%) |
-| mimo-v2.6-flash | 132/140 | 122/140 | 1.93M → 0.68M (−65%) |
+| deepseek-v4.1-flash | 58/70 | 69/70 | 805K → 270K (−66%) |
+| mimo-v2.6-flash | 63/70 | 65/70 | 965K → 247K (−74%) |
 
 Neither model gave a wrong answer in either mode. Every miss was the model re-running its own tool to double-check instead of answering, which the harness can't execute.
 
@@ -217,16 +217,16 @@ Neither model gave a wrong answer in either mode. Every miss was the model re-ru
 [`benchmarks/agent_eval.py`](benchmarks/agent_eval.py) runs the loop an agent actually runs. The model gets a task and four tools (`list_files`, `read_file`, `search`, `http_get`) over a synthetic repository. The harness executes each tool call and sends back the full-size result, until the model answers. Every request streams, and each conversation keeps one session ID so the provider can cache the growing prefix. Cost is estimated from the provider's prices for uncached input, cached input and output.
 
 ```bash
-python benchmarks/agent_eval.py --model <model-id> --repeat 8 --concurrency 10
+python benchmarks/agent_eval.py --model <model-id> --repeat 6 --concurrency 12
 python benchmarks/agent_eval.py --show-workspace   # offline: files, tasks, answers
 ```
 
-Latest results, 4 tasks × 8 runs per mode ([details](docs/live-eval-results.md#agent-evaluation)):
+Latest results, 8 tasks × 6 runs per mode ([details](docs/live-eval-results.md#agent-evaluation)):
 
 | model | direct correct | Proteus correct | prompt tokens, direct → Proteus | est. cost, direct → Proteus |
 |---|---|---|---|---|
-| deepseek-v4.1-flash | 32/32 | 31/32 | 3.96M → 1.20M | $0.273 → $0.117 (−57%) |
-| mimo-v2.6-flash | 32/32 | 32/32 | 0.51M → 0.26M | $0.047 → $0.020 (−57%) |
+| deepseek-v4.1-flash | 48/48 | 48/48 | 4.48M → 1.21M | $0.366 → $0.107 (−71%) |
+| mimo-v2.6-flash | 48/48 | 47/48 | 1.53M → 0.54M | $0.121 → $0.040 (−67%) |
 
 Cached input is billed at about 2% of the uncached price on these models, so the cost saving is smaller than the token saving. Most of it comes from the turn that first brings a large tool output into the conversation.
 

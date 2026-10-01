@@ -21,6 +21,11 @@ _ERROR_PREFIX = re.compile(r"(ERROR|FATAL|CRITICAL|FAILED|Error:|FATAL:)", re.IG
 _WARN_PREFIX = re.compile(r"(WARN|WARNING)", re.IGNORECASE)
 _TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}[T ]?\d{2}:\d{2}(:\d{2}([.,]\d+)?)?")
 _PATH_LIKE = re.compile(r"/[\w./-]+(?:\s|:|$)")
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+# A value at least this many times its group's median is kept as an outlier.
+OUTLIER_FACTOR = 5.0
+MAX_OUTLIERS_PER_GROUP = 3
 
 
 def _normalize_for_dedup(line: str) -> str:
@@ -76,6 +81,11 @@ def dedup_logs(content: str) -> tuple[str, dict]:
             continue
         norm = _normalize_for_dedup(line)
         score = _score_line(line)
+        if score < 3.0:
+            # Routine lines that differ only in their numbers ("request 7
+            # served in 12ms") are one pattern. Error and warning lines keep
+            # their numbers: an order id in a failure is the information.
+            norm = _NUMBER.sub("N", norm)
         is_error = bool(_ERROR_PREFIX.search(line))
         is_stack = bool(_STACK_TRACE_LINES.match(line))
         classified.append((norm, score, is_error, is_stack))
@@ -124,6 +134,9 @@ def dedup_logs(content: str) -> tuple[str, dict]:
                 output_lines.append(f"[last]  {last_raw}")
             else:
                 output_lines.append(f"[x{count}] {first_raw}")
+            for outlier in _outliers([raw for _, raw in lines_for_norm]):
+                if outlier not in (first_raw, last_raw):
+                    output_lines.append(f"[outlier] {outlier}")
 
             total_repetitions_saved += count - 1
 
@@ -154,6 +167,28 @@ def dedup_logs(content: str) -> tuple[str, dict]:
     stats["compressed_chars"] = len(compressed)
 
     return compressed, stats
+
+
+def _outliers(raws: list[str]) -> list[str]:
+    """Lines of a collapsed group whose numbers stand far out from the rest.
+
+    Collapsing "request N served in Nms" to a count hides the one request
+    that took 2950ms when the rest took under 100 (seen live: a model asked
+    for the slowest request and got an answer from the visible lines).
+    """
+    rows = [[float(v) for v in _NUMBER.findall(_TIMESTAMP.sub("", raw))] for raw in raws]
+    width = min((len(r) for r in rows), default=0)
+    picked: list[str] = []
+    for slot in range(width):
+        values = sorted(r[slot] for r in rows)
+        median = values[len(values) // 2]
+        if median <= 0:
+            continue
+        ranked = sorted(range(len(rows)), key=lambda i: -rows[i][slot])
+        for i in ranked[:MAX_OUTLIERS_PER_GROUP]:
+            if rows[i][slot] >= OUTLIER_FACTOR * median and raws[i] not in picked:
+                picked.append(raws[i])
+    return picked[:MAX_OUTLIERS_PER_GROUP]
 
 
 def _count_important(lines: list[str]) -> int:

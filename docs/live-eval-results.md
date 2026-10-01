@@ -297,6 +297,60 @@ What this shows:
   easier to get wrong. No wrong answers in the other 63 Proteus runs or in
   64 direct runs.
 
+## Harder agent tasks
+
+Four more agent tasks, each with its answer where a compressor drops or
+splits content:
+
+- `coupon_orders`: list the orders with one coupon and total them. The IDs
+  are three lines above the coupon in the pretty-printed JSON.
+- `slowest_request`: the slowest request in a 1,500-line log, with one 2,950 ms
+  request among ones under 100 ms.
+- `runbook_owner`: a fact in the middle of the runbook.
+- `retry_settings`: values from two places in the settings file, plus code.
+
+First run (6 runs per task and mode): DeepSeek through Proteus 22/24 against
+24/24 direct, and MiMo 23/24 against 24/24. One DeepSeek miss was the scorer
+not recognising "2,950 ms" (fixed in the harness). The other three were
+Proteus problems:
+
+1. **Retrieve results split JSON records.** A query for `SAVE8` returned the
+   coupon lines with two lines of context, which doesn't reach the
+   `order_id`. DeepSeek said so ("I need the order_ids, which aren't within
+   the 2-line context"), asked again, and ran out of rounds. **Fix:** for a
+   JSON array of objects, a query returns the matching records whole.
+2. **Running out of rounds produced a non-answer.** The turn ended with
+   "Now I need the order_id values..." or with nothing at all. **Fix:**
+   after the last retrieve the proxy asks once more with `tool_choice: "none"`
+   (both models accept it), and tells the model to say what it couldn't check.
+3. **The log compressor never deduplicated access-log lines.** Lines differing
+   only in numbers were separate patterns, so it kept head and tail, and
+   the slow request in the middle was hidden. The marker still said "every
+   error line kept", which was true but beside the point. **Fix:** routine
+   lines group with numbers ignored, and values at least 5× the group median
+   are kept as `[outlier]` lines. The payment log went from 11,182 to 1,895
+   chars with the slow request visible.
+
+### Results after the fixes (8 tasks × 6 runs per mode)
+
+| model | direct correct | Proteus correct | prompt tokens | cache hit rate | est. cost |
+|---|---|---|---|---|---|
+| deepseek-v4.1-flash | 48/48 | 48/48 | 4.48M → 1.21M | 53% → 62% | $0.366 → $0.107 (−71%) |
+| mimo-v2.6-flash | 48/48 | 47/48 | 1.53M → 0.54M | 47% → 56% | $0.121 → $0.040 (−67%) |
+
+The one MiMo miss (`refunds`) listed invented order IDs and amounts. It did
+not reproduce in 12 traced reruns, all correct with one retrieve each. Since
+a forced final round is where a model is most tempted to guess, the proxy's
+note on that round now asks it to say what it couldn't check.
+
+The single-turn suite, re-run after these changes (10 trials per mode):
+DeepSeek 69/70 through Proteus against 58/70 direct, and MiMo 65/70 against
+63/70. MiMo was behind direct before, at 122/140 against 132/140. Its
+`log_errors` misses went away once the log compressed to 1,252 chars with
+every error line in view. One trade-off from the caching fix: requests with
+nothing to compress still carry the retrieve tool's definition, about 160
+prompt tokens (`diff_many_files`: 2,329 → 2,492).
+
 ## Still open
 
 - **MiMo double-checks compressed logs and search results** in single-turn

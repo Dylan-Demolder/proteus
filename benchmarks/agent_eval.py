@@ -112,7 +112,8 @@ def build_workspace(seed: int = 11) -> tuple[dict[str, str], dict[str, str]]:
         elif i % 83 == 5:
             log.append(f"{ts} WARN payment declined for order {7000 + i}: card_declined")
         else:
-            log.append(f"{ts} INFO request {i} served in {rng.randint(3, 90)}ms")
+            ms = 2950 if i == 977 else rng.randint(3, 90)  # one slow request, mid-log
+            log.append(f"{ts} INFO request {i} served in {ms}ms")
     files["logs/payments.log"] = "\n".join(log)
 
     # Runbook and settings disagree about the staging database port.
@@ -121,12 +122,14 @@ def build_workspace(seed: int = 11) -> tuple[dict[str, str], dict[str, str]]:
         f"escalation paths and on-call procedures for team {i}." for i in range(120)
     ]
     sections[64] += "\n\nThe staging database listens on port 6543 and is reset every Sunday."
+    sections[77] += "\n\nOn-call owner for the ledger reconciler: Priya Raman, pager 4471."
     files["docs/RUNBOOK.md"] = "# Runbook\n\n" + "\n\n".join(sections)
     settings = ["# Service settings", ""]
     for f in range(40):
         settings.append(f"service_{f}:")
         settings += [f"  timeout_{f}_{j}: {rng.randint(5, 60)}" for j in range(8)]
-    settings += ["payments_timeout: 30", "", "staging:", "  db_host: staging-db.internal", "  db_port: 6544",
+    settings += ["retries:", "  default: 3", "  payments: 5", "  search: 2", "",
+                 "payments_timeout: 30", "", "staging:", "  db_host: staging-db.internal", "  db_port: 6544",
                  "  reset: weekly", ""]
     files["config/settings.yaml"] = "\n".join(settings)
     files["README.md"] = "# Shop backend\n\nServices in src/services, payments in src/payments, docs in docs/.\n"
@@ -156,6 +159,8 @@ def build_tasks(files: dict[str, str], api: dict[str, str]) -> list[Task]:
     orders = json.loads(api["https://shop.internal/api/orders"])
     refunds = [o for o in orders if o["status"] == "refunded"]
     total = f"{sum(o['total'] for o in refunds):.2f}"
+    coupon = [o for o in orders if o.get("coupon") == "SAVE8"]
+    coupon_total = f"{sum(o['total'] for o in coupon):.2f}"
     return [
         Task("gateway_error",
              "Some payments are failing with a gateway error, not a card decline. Find the gateway error code "
@@ -175,6 +180,24 @@ def build_tasks(files: dict[str, str], api: dict[str, str]) -> list[Task]:
              "Find it, then look up the value of the setting it should use in config/settings.yaml. "
              "Answer with the file, the hard-coded value and the setting's value.",
              ["svc_17", "4711", "30"]),
+        # Harder: each answer sits where a compressor drops or splits content.
+        Task("coupon_orders",
+             "Which orders in https://shop.internal/api/orders used the coupon SAVE8? Answer with every "
+             "order id and their combined total.",
+             [str(o["order_id"]) for o in coupon] + [coupon_total]),
+        Task("slowest_request",
+             "What was the slowest request in logs/payments.log, and how long did it take? "
+             "Answer with the request number and its time.",
+             ["977", "2950"]),
+        Task("runbook_owner",
+             "According to docs/RUNBOOK.md, who is the on-call owner for the ledger reconciler, "
+             "and what is their pager number?",
+             ["Priya Raman", "4471"]),
+        Task("retry_settings",
+             "How many retries does the payments service get according to config/settings.yaml, "
+             "and how many does search get? Then tell me which function in src/payments retries "
+             "charges and how many attempts it makes by default.",
+             [r"re:\b5\b", r"re:\b2\b", "charge_with_retry", r"re:\b3\b"]),
     ]
 
 
@@ -322,14 +345,24 @@ async def run_agent(session, url: str, headers: dict, model: str, task: Task, fi
             if verbose:
                 print(f"  [{verbose}] {c['name']}({c['arguments'][:80]}) -> {len(result):,} chars", file=sys.stderr)
             messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
-    text = answer.casefold()
-    found = sum(e.casefold() in text for e in task.expected)
+    found = sum(matches(answer, e) for e in task.expected)
     if outcome == "answered":
         outcome = "correct" if found == len(task.expected) else "wrong"
     return {"model_calls": model_calls, "tool_calls": tool_calls, "retrievals": retrievals,
             "usage": usage, "answer": answer.strip()[:300], "outcome": outcome,
             "recall": round(found / len(task.expected), 2), "error": error,
             "seconds": round(time.monotonic() - start, 1)}
+
+
+def matches(answer: str, expected: str) -> bool:
+    """Case-insensitive substring, or a regex when written as "re:<pattern>".
+
+    Thousands separators in the answer are ignored: "2,950 ms" is 2950.
+    """
+    answer = re.sub(r"(?<=\d),(?=\d{3}\b)", "", answer)
+    if expected.startswith("re:"):
+        return re.search(expected[3:], answer, re.IGNORECASE) is not None
+    return expected.casefold() in answer.casefold()
 
 
 def cost(model: str, usage: dict) -> float | None:
