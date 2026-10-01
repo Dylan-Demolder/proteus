@@ -2,6 +2,10 @@
 
 Defines three compression modes (conservative, balanced, aggressive)
 that override default config thresholds for different use cases.
+
+Activate one with ``use_profile("aggressive")`` (or ``proteus proxy
+--profile aggressive``). ``get_profile`` and ``apply_profile`` only return
+dicts; they don't change what the compressors do.
 """
 
 from __future__ import annotations
@@ -12,8 +16,9 @@ from typing import Any
 
 PROFILES: dict[str, dict[str, Any]] = {
     "conservative": {
-        # Only compress JSON arrays and repetitive logs
-        # No row-dropping, no text summarization
+        # Highest threshold; no JSON row-dropping, no columnar rewrite, no
+        # text summarization. Logs are still deduplicated and grep output is
+        # still capped, so this is the least lossy profile, not a lossless one.
         "MIN_COMPRESS_CHARS": 5000,
         "JSON_MAX_ROWS_BEFORE_DROP": 999_999,
         "JSON_DROP_HEAD": 50,
@@ -120,6 +125,17 @@ def apply_profile(config_dict: dict[str, Any], profile: str) -> dict[str, Any]:
     merged = dict(config_dict)
     merged.update(overrides)
     return merged
+
+
+def use_profile(name: str) -> None:
+    """Make a profile the live compression settings.
+
+    Resets every setting to its default first, so switching profiles never
+    leaves values behind from the previous one.
+    """
+    from . import config
+
+    config.configure(profile=name)
 
 
 def list_profiles() -> list[str]:

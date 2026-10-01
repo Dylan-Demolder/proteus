@@ -5,9 +5,247 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- **README rewritten around what users run and what the model sees.** It
+  opens with a GIF of a real request to deepseek-v4.1-flash through the proxy:
+  compression, the model's `proteus_retrieve` call, the answer, and billed
+  prompt tokens (2,202 against 16,690 direct). It has before/after screenshots
+  for logs, Python and JSON, an updated flow diagram, a table of what each
+  content type keeps and leaves out, and a short results section linking
+  `docs/live-eval-results.md`. It drops the cost-analysis tables and latency
+  figures that had no reproducible source, the duplicated feature lists, and
+  the test-count bookkeeping. 387 → 185 lines.
+- `benchmarks/make_readme_media.py` regenerates the screenshots and proxy GIF
+  from real output (`--model` for a real model, or a local stand-in without
+  a key). `make_demo_gif.py` now finds a font on Linux, opens on the finished
+  frame (what reduced-motion readers see), and draws solid bars.
+- `demos/`, `integrations/` and `CONTRIBUTING.md` READMEs corrected: current
+  figures, working commands, and the real test layout. The weather demo
+  read its files from a hard-coded `/tmp/weather-app/src`, so it now reads
+  them from its own directory and runs from a clone.
+
+### Fixed
+
+- **Log lines that differed only in their numbers were never deduplicated.**
+  "request 7 served in 12ms" and "request 8 served in 40ms" counted as
+  different patterns, so a 1,500-line access log came out as "1500 unique
+  patterns", and the deduper fell back to keeping head and tail. That
+  hid a 2,950 ms request in the middle. Routine lines (not errors, warnings
+  or stack frames) now group with their numbers ignored. Each group shows a
+  count, the first and last line, and up to three `[outlier]` lines whose
+  values are at least 5× the group's median. Error lines keep their numbers,
+  so every failed order id is still listed. The `log_errors` scenario now
+  compresses 63,816 → 1,252 chars, and the agent eval's log 80,289 → 1,895.
+- **Retrieve queries on JSON split records.** A line match for
+  `"coupon": "SAVE8"` came back without the `order_id` three lines above it,
+  so models asked again and ran out of rounds. For a JSON array of objects,
+  a query now returns the matching records whole, one per line.
+- **Running out of retrieve rounds left the client without an answer.** The
+  turn ended mid-thought ("Now I need the order ids..."). After the last
+  allowed retrieve, the proxy now asks once more with `tool_choice: "none"`.
+  The last retrieve result tells the model it was the last one, and to say
+  what it couldn't check instead of guessing. Applies to streamed and
+  non-streamed replies.
+- **Adding `proteus_retrieve` mid-conversation broke prompt caching.** The
+  tool was added only once something had been compressed. An agent's first
+  turn usually has nothing to compress, so the tools list changed on turn two.
+  The tools list sits at the start of the prompt, so the provider's cached
+  prefix was lost for the rest of the conversation. The tool is now offered
+  on every request that carries tools. In the agent evaluation, DeepSeek's
+  cache hit rate through the proxy went from 50% to 57% (61% direct).
+- **OpenCode Go rejected every request through the proxy.** It now requires
+  an `x-opencode-session` header (400 `MissingSessionID` without one) and
+  asks clients to identify themselves. The proxy forwarded only `X-Title` and
+  `HTTP-Referer`, so a client's session header and User-Agent were dropped.
+  Session headers (`x-opencode-*`, `session_id`, `x-…-session-id`) and
+  `User-Agent` are now forwarded; without a client User-Agent the proxy sends
+  `proteus/<version>`. If the client sends no session header, the
+  `opencode-go` backend adds one derived from the conversation's opening
+  messages, so it stays the same across turns.
+- **`proteus_retrieve` queries rarely matched.** A query had to occur
+  verbatim in a single line, but models write `"staging database port"` or
+  `"timeout = [0-9]"`. Queries now match as text, then as a regex, then by
+  every word, then by any word. Matches come with two lines of context
+  (a lone `"status": "refunded"` line is useless without the `order_id`
+  above it), and the full original comes back when the filter wouldn't be
+  shorter.
+- **Compressed output didn't say what was removed.** With only "compressed
+  23,138→6,609 chars", careful models re-fetched content that was all there.
+  The marker now says what changed ("comments and docstrings removed, code
+  unchanged", "all 300 rows kept in columnar form", "every error line kept",
+  "480 of 500 rows not shown") and mentions the `query` option. The log
+  deduper's omission markers say when no errors were among the omitted lines.
+- **Search results miscounted and hid the odd match out.** When the match
+  cap was reached, "N more files" left out every file below the top 15, and
+  the stats reported files that were never shown. Scoring used keywords, so
+  when the search term was itself a keyword (`timeout`), every match scored
+  the same. Matches with an unusual shape are now kept first, and the hidden
+  ones are summarized by shape (`289× timeout = get_setting('…')`), so the
+  model can see nothing unusual was left out.
+- **Compression that saves little is skipped.** A 20% cut to a diff dropped
+  the file the question was about, and fetching it back cost more than was
+  saved. New `min_savings_pct` (default 25): the proxy sends the original
+  when compressing would save less.
+
+- **`--config` did nothing.** `proteus proxy --config file.yaml` printed the
+  path and never read the file. `pyyaml` was a dependency nothing imported,
+  and `config.yaml` claimed it was hot-reloadable. The file is now loaded and
+  validated: unknown keys and wrong types are errors naming the key. Its
+  `proxy:` section supplies host, port and backend defaults, and the proxy
+  re-reads compression settings when the file changes, keeping the previous
+  settings if an edit is invalid. `proteus file` accepts `--config` too.
+- **Profiles did nothing.** `get_profile()` and `apply_profile()` return
+  dicts that no compressor reads. New `use_profile(name)`, `--profile` on
+  `proteus proxy` and `proteus file`, and a `profile:` key in config files
+  make one live. The README called `conservative` "lossless"; it isn't (logs
+  are still deduplicated, grep output is still capped), so it now says
+  "least lossy".
+- **`compress_history()` skipped OpenAI tool results and threw away old
+  ones.** It only considered user and assistant messages, so
+  `{"role": "tool"}` messages were never compressed. What it did compress was
+  replaced by a bare "[Proteus: … compressed]" marker, discarding the
+  compressed content too, despite the README's "without losing information".
+  It also modified the caller's messages in place and added private
+  `_proteus_*` keys that strict APIs reject. It now compresses tool messages,
+  keeps the compressed content plus a retrieve marker, returns new message
+  objects, adds no private keys, and skips content that is already compressed
+  or answers a `proteus_retrieve` call, so it is safe to run on every turn.
+- The proxy used a hard-coded 3,000-char threshold instead of
+  `config.MIN_COMPRESS_CHARS`, so profiles couldn't change it.
+- The search and diff limits were hard-coded function defaults, even though
+  `config.yaml` listed them. They are now settings (`SEARCH_*`, `DIFF_*`).
+
+- **The proxy now compresses standard OpenAI tool results.** It only looked
+  for `{"type": "tool_result"}` blocks, which the OpenAI chat format doesn't
+  use. `{"role": "tool", "content": ...}` messages, which is how every
+  OpenAI-compatible agent sends tool output, went upstream untouched. Both
+  string content and lists of text parts are now compressed.
+- **The proxy now compresses streaming requests.** Compression was skipped
+  whenever `stream: true`. Most agents stream, so for them the proxy did
+  nothing. Compression applies to the request, so whether the response streams
+  is irrelevant.
+- **`proteus_retrieve` works.** The proxy offered the model this tool but never
+  answered calls to it, so the agent received a call to a tool it didn't
+  define. Compressed output also carried no hash to pass it. Compressed tool
+  results now end with a marker naming the hash. For non-streaming requests,
+  the proxy answers the model's retrieve calls from the cache and asks again,
+  so the client never sees the tool, and token usage is summed across rounds.
+  (Streamed replies got the tool later in this release; see Added.) The optional `query` argument (filter to matching lines) is now
+  implemented.
+- **The code compressor no longer deletes code.** In JS/TS/Go/Rust, a line
+  with an inline `/* comment */` made every following line disappear up to the
+  next `*/`. So did a string containing `/*`, such as the glob
+  `"src/**/*.ts"`. In Python, any line starting with `"""`, for example SQL in
+  a triple-quoted string, was dropped as a "docstring", along with `#` lines
+  inside strings. The strippers now track string literals (Python uses the
+  tokenizer), keep build directives (`//go:build`, `/// <reference>`), and
+  replace a docstring that is a block's only statement with `...` so the code
+  still compiles.
+- **Columnar JSON is lossless, as documented.** Values were written with
+  `str()`, which produced Python reprs (`True`, `{'x': 1}`), broke rows on
+  embedded newlines and quotes, and couldn't tell `null` from `""`. Cells are
+  now bare strings or JSON, and the format decodes back to exactly the input.
+- **JSON arrays of strings or numbers crashed** with `AttributeError` (for
+  example, a list of file paths).
+- **Row-drop `hash=` markers pointed at nothing.** The hash was computed from
+  re-serialized JSON rather than the input text, so `retrieve()` missed
+  whenever the input was pretty-printed.
+- **`ccr.retrieve()` followed path traversal.** A hash like `../x` read a file
+  outside the cache directory, and the model now supplies hashes. Only hex
+  hashes are accepted. Cache entries are also written atomically.
+- **Proxy pass-through doubled `/v1`.** `GET /v1/models` was forwarded as
+  `.../v1/v1/models`. Content-Type is now forwarded on pass-through requests.
+- **Non-JSON upstream errors** (an HTML 502 page, a plain-text 429) are relayed
+  with their status instead of being replaced by a generic 502. Errors on
+  streaming requests are relayed as JSON instead of being labelled SSE.
+- **Long responses were cut off after 120s.** The timeout now bounds connect
+  time and time between bytes, not total duration. Timeouts return 504.
+- The proxy's upstream connection pool is closed on shutdown ("Unclosed client
+  session" warning).
+
+- **Logs, YAML, CSV and CLI output were misrouted to the search compressor,
+  which kept ~30 lines and dropped the rest.** The router counted any line
+  shaped like `word: text` as a grep hit. That included `key: value`, Markdown
+  `Note: ...`, and ISO timestamps (`2026-09-30T10:00:05` parsed as file
+  `2026-09-30T10`, line `00`). In a 300-line log, 17 of 20 distinct errors were
+  lost; every key of a 150-line YAML file was lost. A grep hit now needs a
+  file-path-shaped prefix (contains `/` or ends in an extension), and pytest
+  node ids (`a.py::test`) are excluded. Real `grep -n`, `grep -r` and `rg -C`
+  output still routes to search.
+  **Benchmark headline numbers drop as a result**: the 48-scenario average
+  goes from 68.1% to 62.5% (63.0% after the diff fix below), and the log-analyzer demo from 69% to 60%. The old
+  figures counted that discarded content as savings.
+- **Log truncation dropped every error in the middle of a long log.** Past
+  200 output lines, the deduper kept the first and last 100. It now also keeps
+  error and stack-trace lines from the middle, and marks each skipped run.
+  Block-level dedup, which ran only after truncation had already made its
+  trigger unreachable, now runs first.
+- **A compressor that found nothing could return an empty string**, which was
+  accepted as 100% compression. `compress_tool_output` now rejects empty
+  output, and the search compressor returns non-search input unchanged. The
+  log-analyzer demo forced its nginx access log through the search compressor
+  with a type hint; it now uses `logs`.
+
+- **The diff compressor dropped content without saying so.** Files past the
+  20-file cap still printed their headers but no hunks, so they looked
+  unchanged. Hunks past 10 per file vanished. And of each run of context lines
+  it kept the *first* two, usually discarding the line right next to the
+  change. It now keeps the context nearest each change, and replaces omitted
+  hunks and files with a line naming them and their +/- counts. Plain
+  `diff -u` output now counts as separate files too; hunk bodies are delimited
+  by their @@ line counts, so a removed line reading `--- x` is not mistaken
+  for the next file's header. Diff benchmark average: 21.7% → 27.9%;
+  overall: 63.0%.
+
+### Added
+
+- **Skeletons for large Python files.** Comment stripping saves only 10–25% on
+  real source (measured on aiohttp), under the `min_savings_pct` floor, so
+  most real files went through unchanged. Python files of 20,000+ chars
+  (`code.skeleton_min_chars`) are now sent with function bodies of 4+ lines
+  (`code.skeleton_min_body_lines`) replaced by `...  # proteus: N lines
+  hidden`. Signatures, decorators, constants and class attributes are kept,
+  and the result still parses. A `proteus_retrieve` query matching inside a
+  function returns the whole function. On the aiohttp agent tasks, cost
+  through Proteus went from −19% to −29% (DeepSeek) and from 0% to −26% (MiMo),
+  still 30/30 correct.
+- `agent_eval.py --workspace aiohttp`: the same agent loop over the installed
+  aiohttp source, with five tasks whose answers are read from the source.
+- **`proteus_retrieve` for streamed replies.** Most agents stream, and until
+  now a streamed request was compressed without the retrieve tool, so dropped
+  content was out of reach. The proxy now relays each streamed round as it
+  arrives and holds back the retrieve calls. It answers them from the cache
+  and streams the next round into the same response. Usage is summed across
+  rounds, and the retrieve count arrives as a trailing SSE comment
+  (`: proteus retrievals=N`). New module `proteus.proxy.stream`.
+- `benchmarks/agent_eval.py`: multi-turn agent loop over a synthetic
+  repository, with tools executed by the harness, streaming, per-conversation
+  sessions, cached-token accounting and estimated cost at the model's prices.
+- `X-Proteus-Retrievals` response header: `proteus_retrieve` calls the proxy
+  answered for that request.
+- `benchmarks/live_eval.py`: `--repeat` and `--concurrency`, results
+  aggregated per scenario, and a separate outcome for a model that re-runs
+  its own tool instead of answering. Sends a session ID and User-Agent.
+- `proteus.config.configure()`, `update()`, `reset()`, `current()` and
+  `DEFAULTS`; `proteus.profiles.use_profile()`.
+- `test/test_config.py` (40 tests).
+- `benchmarks/live_eval.py`: correctness and token cost against a real
+  model, direct versus through the proxy, across 7 agent-style scenarios.
+  `--dry-run` (run in CI) reports which answers survive compression without
+  calling an API.
+- `test/test_proxy_fidelity.py`: 90 regression tests covering the above,
+  including end-to-end proxy tests against a local mock upstream. Every test
+  targeting a fix was confirmed to fail on the previous code. The rest are
+  guards that real `grep`/`rg` output still routes to search.
+
 ## [0.2.0] - 2026-09-24
 
-First release published to PyPI as `proteus-compress`.
+Distribution renamed to `proteus-compress` in preparation for PyPI.
+**Not yet published** — install from GitHub (see the README quick start);
+the `publish.yml` workflow and the `v0.2.0` tag are ready for when it is.
 
 ### Added
 
@@ -24,6 +262,16 @@ First release published to PyPI as `proteus-compress`.
   configuration for GitHub Actions and pip dependencies.
 - **`CHANGELOG.md`** (this file).
 - Python 3.13 and 3.14 to the test matrix and trove classifiers.
+- **Hermetic proxy integration tests.** `test_chat_completions` and
+  `test_unknown_route` made *live* calls to `openrouter.ai`, so CI depended on
+  a third party's uptime and status codes — `2d8dbfb` had already weakened the
+  assertions to "non-2xx"/"non-5xx" because the real upstream kept moving them.
+  They now run against a local mock upstream on `127.0.0.1`, which allows
+  **exact** assertions: `200` + echoed body for pass-through, `200` + relayed
+  body for route forwarding, `401` relayed rather than `502`. Two tests added
+  (`test_upstream_error_is_relayed`, `test_no_live_network_calls`):
+  6 → 8 integration tests. Verified passing with a deliberately broken TLS
+  trust store and with all network proxied to a dead port.
 
 ### Changed
 
@@ -56,6 +304,12 @@ First release published to PyPI as `proteus-compress`.
   deeply nested JSON, and multi-line log entries with no redundancy). Now the
   original is returned untouched whenever compression doesn't pay off.
   Benchmark: **15 → 0 non-reversible cases; `rev: True` across all 48.**
+- **`proteus clear` could crash under concurrency.** `ccr.clear()` called
+  `unlink()` on paths from a prior `glob()`; if another process removed a file
+  first, `FileNotFoundError` propagated out of the Click command as a
+  non-zero exit. Same class of bug as the `_maybe_evict()` race above —
+  this was missed the first time round. Now skips vanished entries.
+  Verified with 8 concurrent workers × 20 clear+store cycles: 0 crashes.
 - **`FileNotFoundError` race in the CCR cache under concurrency.**
   `_maybe_evict()` called `os.path.getmtime()` on paths from a prior `glob()`,
   and `stats()` did the same with `stat()`. If another process evicted a file
@@ -66,6 +320,13 @@ First release published to PyPI as `proteus-compress`.
   compression threshold are never stored, so there was no hash to retrieve;
   the benchmark counted that as non-reversible even though output == input.
   Now distinguishes "not compressed" from "compressed and unrecoverable".
+- **`test/run_all.py` shared the global CCR cache**, so running suites
+  concurrently raced on `clear()`/`store()` and its absolute entry-count
+  assertions (`== 0`, `== 10`) failed intermittently. It now redirects
+  `config.CCR_CACHE_DIR` to a private temp dir for the life of the process —
+  the same technique `test_coverage.py` already used — and cleans up on exit.
+  Running the suite no longer pollutes `~/.proteus/cache` either.
+  Verified: 3 concurrent loops × 8 suites = 24 runs, all exit 0.
 - **`proteus retrieve <hash>` could never work.** The Click command function
   was named `retrieve`, shadowing the imported `ccr.retrieve`. The callback
   therefore invoked the Click `Command` object with the hash string as argv,
