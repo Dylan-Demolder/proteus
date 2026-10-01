@@ -138,6 +138,75 @@ check("list content compressed", stats["compressed_count"] >= 0)
 check("no crash on list content", len(result) == 2)
 
 
+
+section("8. OpenAI tool messages, fidelity, idempotence")
+
+import copy
+import re
+import tempfile
+
+from proteus import ccr, config
+
+config.CCR_CACHE_DIR = tempfile.mkdtemp(prefix="proteus-test-")
+
+payload = json.dumps([{"id": j, "name": f"user_{j}", "plan": "pro"} for j in range(200)], indent=2)
+
+
+def agent_turn(n: int) -> list[dict]:
+    return [
+        {"role": "user", "content": f"step {n}"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"c{n}", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": f"c{n}", "content": payload},
+    ]
+
+
+convo = [m for n in range(6) for m in agent_turn(n)]
+snapshot = copy.deepcopy(convo)
+result, stats = compress_history(convo, threshold_chars=10_000, keep_recent=4)
+
+tool_idx = [i for i, m in enumerate(convo) if m["role"] == "tool"]
+old_tools = [i for i in tool_idx if i < len(convo) - 6]
+check("role:tool messages in old turns are compressed",
+      all(result[i]["content"] != payload for i in old_tools) and stats["compressed_count"] == len(old_tools),
+      f"{stats['compressed_count']} of {len(old_tools)}")
+check("recent tool messages are untouched", result[tool_idx[-1]]["content"] == payload)
+first = result[old_tools[0]]["content"]
+check("old result keeps its compressed content, not just a marker", "COLUMNS" in first and "user_150" in first)
+m = re.search(r'proteus_retrieve\(hash="(\w+)"\)', first)
+check("marker hash retrieves the exact original", m is not None and ccr.retrieve(m.group(1)) == payload)
+check("input messages are not modified", convo == snapshot)
+check("no private _proteus keys in the output", "_proteus" not in json.dumps(result))
+
+again, stats2 = compress_history(result, threshold_chars=10_000, keep_recent=4)
+check("running again on its own output compresses nothing more",
+      stats2["compressed_count"] == 0 and again == result)
+
+# The same guarantees on content the old implementation did rewrite:
+# large user messages and tool_result parts.
+legacy = []
+for n in range(4):
+    legacy.append({"role": "user", "content": payload})
+    legacy.append({"role": "user", "content": [{"type": "tool_result", "content": payload}]})
+    legacy.append({"role": "assistant", "content": f"ok {n}"})
+legacy_snapshot = copy.deepcopy(legacy)
+out, lstats = compress_history(legacy, threshold_chars=10_000, keep_recent=2)
+check("user/tool_result content is compressed", lstats["compressed_count"] > 0)
+check("...without modifying the caller's messages", legacy == legacy_snapshot)
+check("...without private _proteus keys", "_proteus" not in json.dumps(out))
+check("...keeping the compressed content", "COLUMNS" in out[0]["content"])
+out2, lstats2 = compress_history(out, threshold_chars=10_000, keep_recent=2)
+check("...and a second pass changes nothing", lstats2["compressed_count"] == 0 and out2 == out)
+
+retrieved = [
+    {"role": "assistant", "content": None, "tool_calls": [
+        {"id": "r1", "type": "function", "function": {"name": "proteus_retrieve", "arguments": "{}"}}]},
+    {"role": "tool", "tool_call_id": "r1", "content": payload},
+    {"role": "user", "content": "thanks"},
+]
+out, _ = compress_history(retrieved, threshold_chars=100, keep_recent=0)
+check("proteus_retrieve results are not re-compressed", out[1]["content"] == payload)
+
 # ── Results ───────────────────────────────────────────────────────────────
 
 total = PASS + FAIL

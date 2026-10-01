@@ -19,7 +19,7 @@ Usage:
 """
 
 from . import ccr, config, history, profiles
-from .compressors.code import compress_file_listing, strip_code
+from .compressors.code import compress_file_listing, skeleton_python, strip_code
 from .compressors.json_crusher import crush_json
 from .compressors.log_deduper import dedup_logs
 from .router import ContentType, detect_content_type, should_compress
@@ -114,11 +114,22 @@ def compress_tool_output(
     elif detected == ContentType.CODE_PYTHON:
         compressed = strip_code(content, "python")
         compressor = "code_python"
+        if config.CODE_SKELETON_MIN_CHARS and len(content) >= config.CODE_SKELETON_MIN_CHARS:
+            # Comment stripping alone saves 10-25% on real source files. A
+            # large file's bodies are hidden instead; proteus_retrieve with a
+            # function's name returns the whole function.
+            skeleton = skeleton_python(compressed, config.CODE_SKELETON_MIN_BODY_LINES)
+            if skeleton is not None:
+                compressed, stats["bodies_hidden"] = skeleton
+                stats["mode"] = "skeleton"
         compressor_stats = {}
 
     elif detected in (ContentType.CODE_JS, ContentType.CODE_TS,
                       ContentType.CODE_GO, ContentType.CODE_RUST):
-        compressed = strip_code(content, "generic")
+        # Go and Rust need to know their language: an apostrophe there starts a
+        # one-character literal or a lifetime, not a string.
+        language = {ContentType.CODE_GO: "go", ContentType.CODE_RUST: "rust"}.get(detected, "generic")
+        compressed = strip_code(content, language)
         compressor = "code_generic"
         compressor_stats = {}
 
@@ -143,10 +154,11 @@ def compress_tool_output(
 
     # Store in CCR cache if compression actually reduced size.
     content_hash = ""
-    if compressor is None or len(compressed) >= len(content):
+    if compressor is None or len(compressed) >= len(content) or not compressed.strip():
         # Compression didn't pay off — the compressor either left the input
         # alone or produced something LARGER (misdetected content type, or an
-        # input with no redundancy to exploit).
+        # input with no redundancy to exploit), or produced nothing at all
+        # (a compressor that found none of the structure it expected).
         #
         # Discard the compressor's output and return the original untouched.
         # Otherwise we'd hand back a mutated payload with no hash stored,

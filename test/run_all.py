@@ -6,12 +6,15 @@ verifies reversibility, and flags any quality loss.
 """
 import json
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from proteus import compress_summary_line, compress_tool_output
+from proteus import config as proteus_config
 from proteus.ccr import clear as ccr_clear
 from proteus.ccr import retrieve
 from proteus.ccr import stats as ccr_stats
@@ -19,6 +22,23 @@ from proteus.compressors.code import compress_file_listing, strip_code
 from proteus.compressors.json_crusher import compact_json, crush_json
 from proteus.compressors.log_deduper import dedup_logs
 from proteus.router import ContentType, detect_content_type, should_compress
+
+# Isolate the CCR cache for this run.
+#
+# This suite asserts ABSOLUTE entry counts ("CCR: starts empty",
+# "CCR: count correct" == 10), so it cannot share ~/.proteus/cache with any
+# other process. Two suites running concurrently — or a parallel test runner —
+# race on clear()/store() and the counts come out wrong, which surfaces as a
+# mysterious intermittent failure with no obvious cause.
+#
+# ccr reads config.CCR_CACHE_DIR at call time, so rebinding it here redirects
+# every CCR operation in this process. Same technique test_coverage.py uses.
+_ISOLATED_CCR_DIR = tempfile.mkdtemp(prefix="proteus-run_all-")
+proteus_config.CCR_CACHE_DIR = _ISOLATED_CCR_DIR
+
+import atexit
+
+atexit.register(shutil.rmtree, _ISOLATED_CCR_DIR, ignore_errors=True)
 
 PASS = 0
 FAIL = 0

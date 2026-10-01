@@ -8,17 +8,107 @@ Backends: openrouter, opencode-go, openai, generic
 
 from __future__ import annotations
 
+import asyncio
+import codecs
+import hashlib
 import json
 import logging
+import os
 import time
 
 import aiohttp
 from aiohttp import web
 
+from proteus import config
+from proteus.proxy import stream
 from proteus.proxy.backends import Backend, get_backend
-from proteus.proxy.handler import transform_request_body
+from proteus.proxy.handler import (
+    pending_retrieve_calls,
+    strip_retrieve_calls,
+    transform_request_body,
+)
 
 logger = logging.getLogger(__name__)
+
+# How many times one request may loop through proteus_retrieve before the
+# answer goes back to the client regardless.
+MAX_RETRIEVE_ROUNDS = 3
+
+# No overall deadline: a long generation or a slow SSE stream is normal. What
+# we bound is time to connect and time between bytes, which catches a hung
+# upstream without cutting off a healthy response.
+CHAT_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=300)
+PASSTHROUGH_TIMEOUT = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=120)
+
+try:
+    from importlib.metadata import version as _pkg_version
+
+    USER_AGENT = f"proteus/{_pkg_version('proteus-compress')}"
+except Exception:  # running from a source checkout
+    USER_AGENT = "proteus"
+
+SSE_HEADERS = {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
+
+# Client headers relayed upstream as-is. Providers use them to identify the
+# client and route or cache per conversation (OpenCode Go rejects requests
+# without a session ID), so a proxy that drops them breaks the client.
+FORWARD_HEADERS = ("X-Title", "HTTP-Referer", "User-Agent")
+
+
+def _answer_now(body: dict) -> dict:
+    """The last round after the retrieve limit: the model must answer in text.
+
+    Without this, a model still asking for proteus_retrieve when the limit is
+    reached leaves the client with a turn that ends mid-thought ("Now I need
+    the order ids...") and no answer. Forced to answer, a model may fill gaps
+    by guessing, so the last retrieve result says so. These messages exist
+    only between the proxy and the model; the client never sees them.
+    """
+    messages = list(body.get("messages") or [])
+    if messages and messages[-1].get("role") == "tool" and isinstance(messages[-1].get("content"), str):
+        messages[-1] = {**messages[-1], "content": messages[-1]["content"] + (
+            "\n[proteus: that was the last retrieve for this turn. Answer from what you have, "
+            "and say plainly what you could not check rather than guessing.]")}
+    return {**body, "messages": messages, "tool_choice": "none"}
+
+
+def _is_session_header(name: str) -> bool:
+    """x-opencode-session, session_id (Codex), x-claude-code-session-id, ..."""
+    name = name.lower().replace("_", "-")
+    return name.startswith("x-opencode-") or "session" in name
+
+
+def client_headers(request_headers) -> dict[str, str]:
+    """Headers from the client that go upstream unchanged."""
+    headers = {h: request_headers[h] for h in FORWARD_HEADERS if h in request_headers}
+    headers.setdefault("User-Agent", USER_AGENT)
+    for h, v in request_headers.items():
+        if _is_session_header(h):
+            headers[h] = v
+    return headers
+
+
+def conversation_id(body: dict) -> str:
+    """A stable ID for a conversation, from its model and opening messages.
+
+    Every turn of an agent conversation resends the same system prompt and
+    first user message, so they hash to the same ID across turns while
+    different conversations get different IDs.
+    """
+    opening = []
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        opening.append([msg.get("role"), msg.get("content")])
+        if msg.get("role") == "user":
+            break
+    seed = json.dumps([body.get("model"), opening], sort_keys=True, default=str)
+    return "proteus-" + hashlib.sha256(seed.encode()).hexdigest()[:32]
 
 
 class ProteusProxy:
@@ -36,6 +126,7 @@ class ProteusProxy:
         api_key_env: str | None = None,
         config_path: str | None = None,
         log_file: str | None = None,
+        profile: str | None = None,
     ):
         # Resolve backend
         if isinstance(backend, Backend):
@@ -44,6 +135,11 @@ class ProteusProxy:
             self.backend = get_backend(backend, upstream_url=upstream_url, api_key_env=api_key_env)
 
         self.config_path = config_path
+        self.profile = profile
+        self._config_mtime = self._config_file_mtime()
+        if config_path or profile:
+            # Invalid settings fail here, at startup, rather than on reload.
+            config.configure(config_path, profile)
         self.log_file = log_file
         self._session: aiohttp.ClientSession | None = None
         self._stats = {
@@ -51,6 +147,7 @@ class ProteusProxy:
             "requests_compressed": 0,
             "chars_saved": 0,
             "tokens_saved": 0,
+            "retrievals_served": 0,
             "start_time": time.time(),
         }
 
@@ -62,6 +159,42 @@ class ProteusProxy:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
+
+    def _config_file_mtime(self) -> float | None:
+        if not self.config_path:
+            return None
+        try:
+            return os.stat(self.config_path).st_mtime
+        except OSError:
+            return None
+
+    def maybe_reload_config(self) -> bool:
+        """Re-apply the config file if it changed since it was last loaded.
+
+        One stat() per request. A file that fails to parse or validate is
+        logged and ignored: the proxy keeps serving with the settings it had.
+        Only compression settings reload; the proxy: section (host, port,
+        backend) needs a restart.
+
+        Returns:
+            True if new settings were applied.
+        """
+        mtime = self._config_file_mtime()
+        if mtime is None or mtime == self._config_mtime:
+            return False
+        self._config_mtime = mtime
+        try:
+            config.configure(self.config_path, self.profile)
+        except Exception as e:
+            logger.error("Config reload failed, keeping previous settings: %s", e)
+            return False
+        logger.info("Reloaded config from %s", self.config_path)
+        return True
+
+    async def close(self) -> None:
+        """Close the upstream connection pool (called on app shutdown)."""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
 
     async def _forward_stream(self, resp: aiohttp.ClientResponse, request: web.BaseRequest) -> web.StreamResponse:
         """Forward an upstream SSE stream to the client."""
@@ -86,8 +219,97 @@ class ProteusProxy:
 
         return response
 
+    async def _stream_with_retrieve(
+        self, request: web.BaseRequest, upstream: aiohttp.ClientSession, upstream_url: str,
+        headers: dict[str, str], body: dict,
+    ) -> web.StreamResponse:
+        """Relay a streamed reply, answering proteus_retrieve calls in between rounds.
+
+        See proteus.proxy.stream for how each round is rewritten. The HTTP
+        status and headers go out with the first round, so an upstream error in
+        a later round is reported as an SSE error event.
+        """
+        response: web.StreamResponse | None = None
+        usage: dict = {}
+        retrievals = 0
+        last_chunk: dict = {}
+
+        async def send(events: list[str]) -> None:
+            assert response is not None
+            for event in events:
+                await response.write((event + "\n\n").encode())
+
+        try:
+            for round_no in range(MAX_RETRIEVE_ROUNDS + 1):
+                async with upstream.post(upstream_url, json=body, headers=headers, timeout=CHAT_TIMEOUT) as resp:
+                    if "text/event-stream" not in resp.content_type:
+                        data = await resp.read()
+                        if response is None:
+                            # An error, or an upstream that ignored stream=true,
+                            # before anything was sent. A JSON reply still
+                            # can't carry our retrieve calls to the client.
+                            try:
+                                reply = json.loads(data)
+                            except ValueError:
+                                reply = None
+                            if resp.status < 400 and isinstance(reply, dict) and reply.get("choices"):
+                                reply = self.backend.transform_response(strip_retrieve_calls(reply))
+                                return web.json_response(reply, status=resp.status)
+                            return web.Response(body=data, status=resp.status,
+                                                content_type=resp.content_type or "application/json")
+                        await send([stream.error_event(
+                            f"upstream returned {resp.status} during a proteus_retrieve round: "
+                            f"{data[:300].decode(errors='replace')}")])
+                        break
+                    if response is None:
+                        response = web.StreamResponse(status=resp.status, headers=SSE_HEADERS)
+                        await response.prepare(request)
+                    rnd = stream.StreamRound(first=round_no == 0, can_retrieve=round_no < MAX_RETRIEVE_ROUNDS)
+                    buffer = ""
+                    # Incremental: a multi-byte character can be split across chunks.
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    async for data, _ in resp.content.iter_chunks():
+                        buffer += decoder.decode(data)
+                        events, buffer = stream.split_events(buffer)
+                        for event in events:
+                            await send(rnd.feed(event))
+                    buffer += decoder.decode(b"", final=True)
+                    if buffer.strip():
+                        await send(rnd.feed(buffer))
+                stream.add_usage(usage, rnd.usage)
+                last_chunk = rnd.last_chunk or last_chunk
+                followup = rnd.followup()
+                if followup is None:
+                    await send(rnd.closing())
+                    break
+                assistant, results = followup
+                body = {**body, "messages": [*body["messages"], assistant, *results]}
+                if round_no + 1 >= MAX_RETRIEVE_ROUNDS:
+                    body = _answer_now(body)
+                retrievals += len(results)
+                self._stats["retrievals_served"] += len(results)
+            if usage:
+                await send([stream.usage_event(usage, last_chunk)])
+            await send(["data: [DONE]", f": proteus retrievals={retrievals}"])
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass  # the client went away
+        except asyncio.TimeoutError:
+            if response is None:
+                return web.json_response({"error": "Upstream request timed out"}, status=504)
+            await send([stream.error_event("upstream timed out"), "data: [DONE]"])
+        except aiohttp.ClientError as e:
+            if response is None:
+                return web.json_response({"error": f"Upstream request failed: {e}"}, status=502)
+            await send([stream.error_event(f"upstream request failed: {e}"), "data: [DONE]"])
+        assert response is not None
+        return response
+
     async def _process_and_forward(self, body: dict, request_headers, request: web.Request | None = None) -> web.StreamResponse:
         """Core logic: compress body tool results and forward to upstream.
+
+        If the model calls proteus_retrieve, the proxy answers the call itself
+        and asks again, so the client only ever sees its own tools. Streamed
+        requests get the same, round by round (see _stream_with_retrieve).
 
         Args:
             body: Parsed JSON request body.
@@ -98,18 +320,21 @@ class ProteusProxy:
             A web.StreamResponse — web.Response (JSON) for non-streaming,
             web.StreamResponse for SSE.
         """
-        is_stream = body.get("stream", False)
+        is_stream = bool(body.get("stream", False))
 
-        # Transform: compress tool results (only for non-streaming — streaming
-        # responses can't be meaningfully batch-compressed in a proxy)
-        if not is_stream:
-            start = time.time()
-            mod_body, _ccr_lookup, cstats = transform_request_body(body)
-            transform_time = time.time() - start
-        else:
-            mod_body = body
-            cstats = {"compressed": 0, "total_saved": 0, "total_tokens_saved": 0}
-            transform_time = 0.0
+        # Compression is about the *request*: tool outputs going to the model.
+        # Whether the *response* streams doesn't matter, so both are compressed.
+        start = time.time()
+        # From the client's messages, before compression rewrites them: a
+        # config change mid-conversation must not change the session.
+        conv_id = conversation_id(body)
+        mod_body, _ccr_lookup, cstats = transform_request_body(body)
+        transform_time = time.time() - start
+        serve_retrieve = bool(cstats.get("injected_tool"))
+
+        self._stats["requests_compressed"] += 1 if cstats["compressed"] > 0 else 0
+        self._stats["chars_saved"] += cstats["total_saved"]
+        self._stats["tokens_saved"] += cstats["total_tokens_saved"]
 
         # Apply backend-specific request transformations
         mod_body = self.backend.transform_request(mod_body)
@@ -124,72 +349,117 @@ class ProteusProxy:
         }
         for h, v in self.backend.extra_headers.items():
             headers[h] = v
-
-        for h in ["X-Title", "HTTP-Referer"]:
-            if h in request_headers:
-                headers[h] = request_headers[h]
+        headers.update(client_headers(request_headers))
+        session_header = self.backend.session_header
+        if session_header and not any(_is_session_header(h) for h in headers):
+            headers[session_header] = conv_id
 
         upstream_url = f"{self.upstream_url}/chat/completions"
+        if is_stream and serve_retrieve and request is not None:
+            return await self._stream_with_retrieve(request, upstream, upstream_url, headers, mod_body)
+        usage: dict = {}
+        retrieve_round = 0
+        retrievals = 0
+        start_fwd = time.time()
 
-        try:
-            start_fwd = time.time()
-            async with upstream.post(
-                upstream_url,
-                json=mod_body,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                fwd_time = time.time() - start_fwd
+        while True:
+            try:
+                async with upstream.post(
+                    upstream_url,
+                    json=mod_body,
+                    headers=headers,
+                    timeout=CHAT_TIMEOUT,
+                ) as resp:
+                    # Streaming: forward SSE events as-is. An upstream error
+                    # arrives as a plain JSON body even for stream=true, so it
+                    # falls through and is relayed as JSON, not relabelled SSE.
+                    is_sse = "text/event-stream" in resp.content_type
+                    if is_sse or (is_stream and resp.status < 400):
+                        if request is None:
+                            # aiohttp needs the originating client request to
+                            # prepare a response on. Without one (direct calls to
+                            # _process_and_forward) we can't relay the SSE stream,
+                            # so fail loudly instead of raising TypeError inside
+                            # StreamResponse.prepare().
+                            return web.json_response(
+                                {"error": "streaming requires a client request"},
+                                status=500,
+                            )
+                        return await self._forward_stream(resp, request)
 
-                # Streaming: forward SSE events as-is
-                if is_stream or "text/event-stream" in resp.content_type:
-                    if request is None:
-                        # aiohttp needs the originating client request to
-                        # prepare a response on. Without one (direct calls to
-                        # _process_and_forward) we can't relay the SSE stream,
-                        # so fail loudly instead of raising TypeError inside
-                        # StreamResponse.prepare().
-                        return web.json_response(
-                            {"error": "streaming requires a client request"},
-                            status=500,
+                    # Non-streaming: parse JSON response. Upstream errors are
+                    # not always JSON (an HTML 502 page from a load balancer,
+                    # a plain-text 429). Those are relayed as they came instead
+                    # of being replaced with a generic 502.
+                    try:
+                        response_data = await resp.json(content_type=None)
+                    except ValueError:
+                        response_data = None
+                    if not isinstance(response_data, dict):
+                        return web.Response(
+                            body=await resp.read(),
+                            status=resp.status,
+                            content_type=resp.content_type or "text/plain",
                         )
-                    return await self._forward_stream(resp, request)
+                    status = resp.status
+            except asyncio.TimeoutError:
+                logger.error("Upstream request timed out")
+                return web.json_response({"error": "Upstream request timed out"}, status=504)
+            except aiohttp.ClientError as e:
+                logger.error("Upstream request failed: %s", e)
+                return web.json_response(
+                    {"error": f"Upstream request failed: {str(e)}"}, status=502
+                )
 
-                # Non-streaming: parse JSON response
-                response_data = await resp.json()
+            if not serve_retrieve or status >= 400:
+                break
+            followup = pending_retrieve_calls(response_data)
+            if followup is None or retrieve_round >= MAX_RETRIEVE_ROUNDS:
+                response_data = strip_retrieve_calls(response_data)
+                break
 
-                # Log if configured
-                if self.log_file:
-                    self._write_log_entry({
-                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "method": "POST",
-                        "path": "/v1/chat/completions",
-                        "status": resp.status,
-                        "transform_ms": round(transform_time * 1000),
-                        "forward_ms": round(fwd_time * 1000),
-                        "compressed": cstats["compressed"],
-                        "total_saved": cstats["total_saved"],
-                        "tool_calls": cstats.get("tool_calls_count", 0),
-                    })
+            # The model asked for original content. Answer from the cache and
+            # ask again. The client never sees this exchange.
+            retrieve_round += 1
+            _add_usage(usage, response_data)
+            assistant, results = followup
+            mod_body = {**mod_body, "messages": [*mod_body["messages"], assistant, *results]}
+            if retrieve_round >= MAX_RETRIEVE_ROUNDS:
+                mod_body = _answer_now(mod_body)
+            self._stats["retrievals_served"] += len(results)
+            retrievals += len(results)
 
-                # Update stats
-                self._stats["requests_compressed"] += 1 if cstats["compressed"] > 0 else 0
-                self._stats["chars_saved"] += cstats["total_saved"]
-                self._stats["tokens_saved"] += cstats["total_tokens_saved"]
+        fwd_time = time.time() - start_fwd
+        if usage:
+            # Report what the whole exchange cost, not just the last round.
+            _add_usage(usage, response_data)
+            response_data["usage"] = usage
 
-                # Apply backend-specific response transformations
-                response_data = self.backend.transform_response(response_data)
-                return web.json_response(response_data, status=resp.status)
+        # Log if configured
+        if self.log_file:
+            self._write_log_entry({
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "method": "POST",
+                "path": "/v1/chat/completions",
+                "status": status,
+                "transform_ms": round(transform_time * 1000),
+                "forward_ms": round(fwd_time * 1000),
+                "compressed": cstats["compressed"],
+                "total_saved": cstats["total_saved"],
+                "tool_calls": cstats.get("tool_calls_count", 0),
+                "retrieve_rounds": retrieve_round,
+            })
 
-        except aiohttp.ClientError as e:
-            logger.error("Upstream request failed: %s", e)
-            return web.json_response(
-                {"error": f"Upstream request failed: {str(e)}"}, status=502
-            )
+        # Apply backend-specific response transformations
+        response_data = self.backend.transform_response(response_data)
+        # How many proteus_retrieve calls the proxy answered for this request.
+        return web.json_response(response_data, status=status,
+                                 headers={"X-Proteus-Retrievals": str(retrievals)})
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Handle POST /v1/chat/completions — compress + forward."""
         self._stats["requests_total"] += 1
+        self.maybe_reload_config()
 
         try:
             body = await request.json()
@@ -231,6 +501,7 @@ class ProteusProxy:
                 "requests_compressed": self._stats["requests_compressed"],
                 "chars_saved": self._stats["chars_saved"],
                 "tokens_saved_estimate": self._stats["tokens_saved"],
+                "retrievals_served": self._stats["retrievals_served"],
             },
         })
 
@@ -239,8 +510,19 @@ class ProteusProxy:
         upstream = await self._get_upstream_session()
         api_key = self.backend.api_key
 
-        headers = {"Authorization": f"Bearer {api_key}"}
-        upstream_url = f"{self.upstream_url}{request.path}"
+        headers = {"Authorization": f"Bearer {api_key}", **client_headers(request.headers)}
+        for h in ("Content-Type", "Accept"):
+            if h in request.headers:
+                headers[h] = request.headers[h]
+
+        # Clients are told to use http://host:port/v1 as their base URL, and
+        # every backend's upstream_url already ends in its version (…/v1), so
+        # a request for /v1/models must go to {upstream_url}/models, not
+        # {upstream_url}/v1/models.
+        path = request.path
+        if path == "/v1" or path.startswith("/v1/"):
+            path = path[len("/v1"):]
+        upstream_url = f"{self.upstream_url}{path}"
         if request.query_string:
             upstream_url += f"?{request.query_string}"
 
@@ -248,11 +530,13 @@ class ProteusProxy:
             body = await request.read() if request.can_read_body else None
             async with upstream.request(
                 request.method, upstream_url, headers=headers, data=body,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=PASSTHROUGH_TIMEOUT,
             ) as resp:
                 data = await resp.read()
                 return web.Response(body=data, status=resp.status,
                                     content_type=resp.content_type)
+        except asyncio.TimeoutError:
+            return web.json_response({"error": "Upstream request timed out"}, status=504)
         except aiohttp.ClientError as e:
             return web.json_response(
                 {"error": str(e)}, status=502
@@ -269,12 +553,18 @@ class ProteusProxy:
             pass
 
 
+def _add_usage(total: dict, response_data: dict) -> None:
+    """Add a response's token counts, nested details included, into a running total."""
+    stream.add_usage(total, response_data.get("usage") or {})
+
+
 def create_app(
     backend: str | Backend = "openrouter",
     upstream_url: str | None = None,
     api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
+    profile: str | None = None,
 ) -> web.Application:
     """Create the aiohttp application with routes."""
     proxy = ProteusProxy(
@@ -283,10 +573,16 @@ def create_app(
         api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
+        profile=profile,
     )
 
     app = web.Application()
     app["proxy"] = proxy
+
+    async def _close_upstream(_app: web.Application) -> None:
+        await proxy.close()
+
+    app.on_cleanup.append(_close_upstream)
 
     app.router.add_post("/v1/chat/completions", proxy.handle_chat_completions)
     app.router.add_get("/livez", proxy.handle_livez)
@@ -306,8 +602,14 @@ def start_proxy(
     api_key_env: str | None = None,
     config_path: str | None = None,
     log_file: str | None = None,
+    profile: str | None = None,
 ):
-    """Start the Proteus proxy server (blocking)."""
+    """Start the Proteus proxy server (blocking).
+
+    Compression settings come from config_path and/or profile if given;
+    those should already be applied (the CLI does), and the file is
+    re-read whenever it changes.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -319,6 +621,7 @@ def start_proxy(
         api_key_env=api_key_env,
         config_path=config_path,
         log_file=log_file,
+        profile=profile,
     )
 
     proxy = app["proxy"]

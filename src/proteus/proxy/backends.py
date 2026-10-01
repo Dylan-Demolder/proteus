@@ -37,6 +37,9 @@ class Backend:
         strip_request_fields: Fields to remove from request body before forwarding
             (e.g., fields that upstream doesn't support).
         description: Human-readable description for --help.
+        session_header: Header the upstream needs to identify a conversation
+            (e.g., "x-opencode-session"). If the client doesn't send one, the
+            proxy derives a stable ID from the start of the conversation.
     """
 
     name: str
@@ -46,6 +49,7 @@ class Backend:
     extra_headers: dict[str, str] = field(default_factory=dict)
     strip_request_fields: list[str] = field(default_factory=list)
     description: str = ""
+    session_header: str | None = None
 
     @property
     def api_key(self) -> str:
@@ -109,6 +113,8 @@ BUILTIN_BACKENDS: dict[str, Backend] = {
         api_key_env="OPENCODE_GO_API_KEY",
         description="OpenCode Go — flat-rate $10/month open model access",
         strip_request_fields=["reasoning_effort", "stream_options"],
+        # Requests without it are rejected (400 MissingSessionID).
+        session_header="x-opencode-session",
     ),
     "openai": Backend(
         name="openai",
@@ -164,6 +170,7 @@ def get_backend(name: str, upstream_url: str | None = None, api_key_env: str | N
             extra_headers=dict(backend.extra_headers),
             strip_request_fields=list(backend.strip_request_fields),
             description=backend.description,
+            session_header=backend.session_header,
         )
 
     return backend

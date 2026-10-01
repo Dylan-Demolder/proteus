@@ -24,7 +24,11 @@ OUT = ROOT / "docs" / "demo.gif"
 BG = (13, 17, 23)
 FG = (201, 209, 217)
 
-FONT_PATH = "/System/Library/Fonts/Menlo.ttc"
+FONT_PATHS = (
+    "/System/Library/Fonts/Menlo.ttc",                         # macOS
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",     # Debian/Ubuntu
+    "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",  # Fedora
+)
 FONT_SIZE = 15
 LINE_H = 21
 PAD = 22
@@ -36,14 +40,14 @@ MARKER_LEN = 7
 FUZZ = "▊"
 
 
-def font() -> ImageFont.FreeTypeFont:
-    if not os.path.exists(FONT_PATH):
-        raise SystemExit(
-            f"Font not found: {FONT_PATH}\n"
-            "This script targets macOS. On Linux, point FONT_PATH at a "
-            "monospace TTF (e.g. DejaVuSansMono.ttf) and re-run."
-        )
-    return ImageFont.truetype(FONT_PATH, FONT_SIZE, index=0)
+def font(size: int = FONT_SIZE) -> ImageFont.FreeTypeFont:
+    for path in FONT_PATHS:
+        if os.path.exists(path):
+            return ImageFont.truetype(path, size, index=0)
+    raise SystemExit(
+        "No monospace font found. Tried:\n  " + "\n  ".join(FONT_PATHS)
+        + "\nInstall DejaVu Sans Mono or add a path to FONT_PATHS."
+    )
 
 
 def parse(text: str, default: tuple[int, int, int]) -> list[tuple[str, tuple[int, int, int]]]:
@@ -129,7 +133,11 @@ def render(
     for runs in lines[:max_lines]:
         x = PAD
         for text, colour in runs:
-            d.text((x, y), text, font=fnt, fill=colour)
+            if text and set(text) == {"█"}:
+                # Block glyphs leave hairline seams in some fonts; draw a solid bar.
+                d.rectangle([x, y + 2, x + fnt.getlength(text) - 1, y + line_h - 3], fill=colour)
+            else:
+                d.text((x, y), text, font=fnt, fill=colour)
             # Advance by measured ink advance, not len()*char_width — glyph
             # widths differ from the nominal cell for arrows and box-drawing.
             x += fnt.getlength(text)
@@ -256,6 +264,10 @@ def main() -> None:
     durations[-1] = max(durations[-1], 2200)  # hold the result
 
     images = [render(fr, fnt, max_lines) for fr in unique]
+    # Open on the finished picture: GitHub shows only the first frame to
+    # readers with reduced motion, and static previews show nothing else.
+    images.insert(0, images[-1])
+    durations.insert(0, 3000)
 
     # Every frame must share one canvas size, else PIL crops to the first.
     sizes = {im.size for im in images}
