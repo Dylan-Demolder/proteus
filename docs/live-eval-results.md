@@ -351,6 +351,59 @@ every error line in view. One trade-off from the caching fix: requests with
 nothing to compress still carry the retrieve tool's definition, about 160
 prompt tokens (`diff_many_files`: 2,329 → 2,492).
 
+## Real code: the aiohttp source
+
+The synthetic workspace was built to have compressible output. To check
+real code, `agent_eval.py --workspace aiohttp` points the same agent loop at
+the installed aiohttp package (55 files, 955K chars). There are five tasks.
+Their answers are read out of the source with regexes, so the tasks follow
+whichever version is installed:
+
+- `connector_defaults`: connection limits and keep-alive timeout.
+- `redirect_statuses`: which statuses are followed as redirects.
+- `default_timeout`: the session's default timeouts.
+- `redirect_reason` and `digest_rfc`: these answers appear only in comments,
+  which the code compressor removes.
+
+**First run: correct, but little saved.** 30/30 in both modes on both models.
+Cost was −19% on DeepSeek and 0% on MiMo. The comment-only answers came
+through because both models found them with `search`, which returns raw
+matching lines. The savings were small because stripping comments and
+docstrings saves only 10–25% on real source files (`client.py`: 12%,
+`connector.py`: 25%, 20% across the package). That is under the 25%
+`min_savings_pct` floor, so most files went through unchanged.
+
+**Fix: skeletons for large Python files, whole functions on retrieve.** A
+Python file of 20,000+ chars is sent as a skeleton: imports, constants,
+class attributes, decorators and full signatures are kept, and each function
+body of 4+ lines becomes `...  # proteus: N lines hidden`. The skeleton still
+parses as Python. `client.py` goes from 64,597 to 24,464 chars. When the
+model queries the original, a match inside a function returns the whole
+function. A match inside a function over 150 lines gets ±8 lines instead.
+
+| model | direct cost | Proteus, comments only | Proteus, skeleton |
+|---|---|---|---|
+| deepseek-v4.1-flash | $0.142 | −19% | −29% ($0.1005) |
+| mimo-v2.6-flash | $0.055 | 0% | −26% ($0.0412) |
+
+Both were still 30/30 correct. The prompt token count went the other way:
+1.17M through Proteus against 1.03M direct on DeepSeek, because the models
+fetched function bodies in extra retrieve rounds. Those rounds re-send a
+prefix the provider has already cached, so 56% of Proteus's prompt tokens
+were cache hits against 19% for direct. Counting tokens alone would call
+this a regression. Cost is the right measure.
+
+What real code taught us:
+
+- **Real code compresses far less than synthetic code.** The synthetic
+  files were mostly docstrings and comments; real files are mostly code.
+- **Models search before they read.** On real code, both models usually ran
+  `search` first and read one or two files. Search output already
+  compresses well (114K → 2.3K for `def `).
+- **Savings on code come from structure, not stripping.** Hiding bodies and
+  fetching whole functions on demand saved more than removing comments, at
+  the cost of extra rounds.
+
 ## Still open
 
 - **MiMo double-checks compressed logs and search results** in single-turn

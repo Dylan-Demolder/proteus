@@ -35,6 +35,8 @@ CODE_MAX_FUNCTION_LINES = 15
 CODE_STRIP_COMMENTS = True
 CODE_STRIP_BLANK_LINES = True
 CODE_MAX_FILE_LINES = 200
+CODE_SKELETON_MIN_CHARS = 20000   # Python this long: hide function bodies, keep signatures (0 = never)
+CODE_SKELETON_MIN_BODY_LINES = 4  # Shorter bodies stay visible
 
 # ── File Lister ──
 LS_STRIP_PERMS = True             # Remove -rw-r--r-- columns

@@ -30,6 +30,11 @@ logs:
   keep_first_last: true
   max_lines_total: 200
 
+# ── Code ──
+code:
+  skeleton_min_chars: 20000     # Python this long: hide function bodies, keep signatures (0 = never)
+  skeleton_min_body_lines: 4    # shorter bodies stay visible
+
 # ── File Listing ──
 file_listing:
   strip_perms: true

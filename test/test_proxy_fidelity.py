@@ -421,6 +421,36 @@ check("strip_retrieve_calls turns a retrieve-only turn into a plain stop",
 # =============================================================================
 #  6. Proxy server end-to-end (local mock upstream, no network)
 # =============================================================================
+section("5b2. Large Python files: skeleton and whole-function retrieve")
+
+import ast as _ast
+
+from proteus.compressors.code import skeleton_python
+
+big_py = "import os\n\nLIMIT = 100\n\n" + "\n".join(
+    f"@cached\ndef handler_{i}(request, timeout={i}):\n"
+    + "".join(f"    step_{j} = request.get({j})\n" for j in range(6))
+    + f"    return step_5 + {i}\n" for i in range(150)
+) + "\n\nclass Client:\n    retries = 3\n\n    def connect(self, host):\n" + "".join(
+    f"        self.part_{j} = host\n" for j in range(5)) + "        return KEEPALIVE_SECONDS_15\n"
+out, st = compress_tool_output(big_py)
+check("Skeleton: large Python file gets bodies hidden", st.get("mode") == "skeleton" and st["bodies_hidden"] == 151)
+check("Skeleton: signatures, decorators, constants, class attributes kept",
+      "def handler_77(request, timeout=77):" in out and "@cached" in out and "LIMIT = 100" in out
+      and "retries = 3" in out)
+check("Skeleton: bodies replaced by a line count", "step_3" not in out and "...  # proteus: 7 lines hidden" in out)
+check("Skeleton: output still parses as Python", _ast.parse(out) is not None)
+check("Skeleton: small bodies kept", skeleton_python("def f():\n    return 1\n") is None)
+check("Skeleton: under the size threshold, comments-only stripping",
+      compress_tool_output(big_py[:5000])[1].get("mode") != "skeleton")
+hp = ccr.store(big_py, "c", "code_python", {})
+q = run_retrieve(call(json.dumps({"hash": hp, "query": "def connect"})))
+check("Retrieve in Python: the whole enclosing function comes back",
+      "def connect(self, host):" in q and "KEEPALIVE_SECONDS_15" in q and "whole enclosing function" in q
+      and "handler_" not in q)
+q = run_retrieve(call(json.dumps({"hash": hp, "query": "step_2 = request.get(2)"})))
+check("Retrieve in Python: hits inside many functions return each one", q.count("def handler_") == 150 or q == big_py)
+
 section("5c. Streamed replies: proteus_retrieve rounds")
 
 from proteus.proxy.stream import StreamRound, split_events

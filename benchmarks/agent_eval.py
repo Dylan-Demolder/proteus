@@ -27,6 +27,7 @@ Usage:
     export OPENCODE_GO_API_KEY=...
     python benchmarks/agent_eval.py --model deepseek-v4.1-flash --repeat 5
     python benchmarks/agent_eval.py --model mimo-v2.6-flash --task refunds -v
+    python benchmarks/agent_eval.py --workspace aiohttp --model <model-id>   # real code
     python benchmarks/agent_eval.py --show-workspace      # offline: sizes, tasks, answers
 """
 
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import random
 import re
 import sys
@@ -199,6 +201,58 @@ def build_tasks(files: dict[str, str], api: dict[str, str]) -> list[Task]:
              "charges and how many attempts it makes by default.",
              [r"re:\b5\b", r"re:\b2\b", "charge_with_retry", r"re:\b3\b"]),
     ]
+
+
+def build_aiohttp_workspace() -> tuple[dict[str, str], dict[str, str], list[Task]]:
+    """Real code: the installed aiohttp package (a dependency, so always present).
+
+    The expected answers are read out of the source with regexes, so the
+    tasks follow whatever aiohttp version is installed. A task whose regex
+    no longer matches is left out rather than scored against a stale answer.
+    """
+    import aiohttp
+
+    root = Path(aiohttp.__file__).parent
+    files = {f"aiohttp/{p.relative_to(root)}": p.read_text(encoding="utf-8", errors="replace")
+             for p in sorted(root.rglob("*.py"))}
+
+    def grab(path: str, pattern: str) -> str | None:
+        m = re.search(pattern, files.get(f"aiohttp/{path}", ""))
+        return m.group(1) if m else None
+
+    tasks: list[Task] = []
+    limit = grab("connector.py", r"\blimit: int = (\d+)")
+    per_host = grab("connector.py", r"\blimit_per_host: int = (\d+)")
+    keepalive = grab("connector.py", r"keepalive_timeout = (\d+)(?:\.0)?\b")
+    if limit and per_host and keepalive:
+        tasks.append(Task("connector_defaults",
+                          "In this aiohttp source, what are a connector's default total connection limit and "
+                          "per-host limit, and its default keep-alive timeout in seconds?",
+                          [rf"re:\b{limit}\b", rf"re:\b{per_host}\b", rf"re:\b{keepalive}\b"]))
+    statuses = grab("client.py", r"resp\.status in \(([\d, ]+)\) and allow_redirects")
+    if statuses:
+        tasks.append(Task("redirect_statuses",
+                          "Which HTTP status codes make aiohttp's ClientSession follow a redirect?",
+                          [rf"re:\b{code.strip()}\b" for code in statuses.split(",")]))
+    if "# For 301 and 302, mimic IE" in files.get("aiohttp/client.py", ""):
+        # Only a comment says why: the code compressor removes it.
+        tasks.append(Task("redirect_reason",
+                          "When following a 301 or 302 redirect for a POST, aiohttp switches to GET. "
+                          "According to the comment in the source, which browser's behaviour does it mimic?",
+                          [r"re:\bIE\b|Internet Explorer"]))
+    total = grab("client.py", r"DEFAULT_TIMEOUT: Final\[ClientTimeout\] = ClientTimeout\(total=([^,]+),")
+    connect = grab("client.py", r"DEFAULT_TIMEOUT: Final\[ClientTimeout\] = ClientTimeout\(total=[^,]+, sock_connect=(\d+)")
+    if total and connect and re.fullmatch(r"[\d\s*]+", total):
+        seconds = math.prod(int(n) for n in total.split("*"))  # e.g. "5 * 60"
+        tasks.append(Task("default_timeout",
+                          "What is the default total timeout of an aiohttp ClientSession, in seconds, and its "
+                          "default socket-connect timeout?",
+                          [rf"re:\b{seconds}\b", rf"re:\b{connect}\b"]))
+    if "RFC 7616" in files.get("aiohttp/client_middleware_digest_auth.py", ""):
+        tasks.append(Task("digest_rfc",
+                          "Which RFC does aiohttp's digest authentication middleware follow?",
+                          ["7616"]))
+    return files, {}, tasks
 
 
 TOOLS = [
@@ -466,6 +520,8 @@ def main() -> int:
     parser.add_argument("--upstream-url")
     parser.add_argument("--api-key-env")
     parser.add_argument("--model")
+    parser.add_argument("--workspace", default="synthetic", choices=["synthetic", "aiohttp"],
+                        help="synthetic repo (default), or the installed aiohttp source as real code")
     parser.add_argument("--task", action="append", help="run only this task (repeatable)")
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=4)
@@ -475,8 +531,11 @@ def main() -> int:
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    files, api = build_workspace()
-    tasks = build_tasks(files, api)
+    if args.workspace == "aiohttp":
+        files, api, tasks = build_aiohttp_workspace()
+    else:
+        files, api = build_workspace()
+        tasks = build_tasks(files, api)
     if args.task:
         unknown = set(args.task) - {t.name for t in tasks}
         if unknown:

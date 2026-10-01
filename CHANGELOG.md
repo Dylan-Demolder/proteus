@@ -182,6 +182,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Skeletons for large Python files.** Comment stripping saves only 10–25% on
+  real source (measured on aiohttp), under the `min_savings_pct` floor, so
+  most real files went through unchanged. Python files of 20,000+ chars
+  (`code.skeleton_min_chars`) are now sent with function bodies of 4+ lines
+  (`code.skeleton_min_body_lines`) replaced by `...  # proteus: N lines
+  hidden`. Signatures, decorators, constants and class attributes are kept,
+  and the result still parses. A `proteus_retrieve` query matching inside a
+  function returns the whole function. On the aiohttp agent tasks, cost
+  through Proteus went from −19% to −29% (DeepSeek) and from 0% to −26% (MiMo),
+  still 30/30 correct.
+- `agent_eval.py --workspace aiohttp`: the same agent loop over the installed
+  aiohttp source, with five tasks whose answers are read from the source.
 - **`proteus_retrieve` for streamed replies.** Most agents stream, and until
   now a streamed request was compressed without the retrieve tool, so dropped
   content was out of reach. The proxy now relays each streamed round as it

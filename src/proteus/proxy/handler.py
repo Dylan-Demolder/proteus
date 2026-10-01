@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from proteus import ccr, compress_tool_output, config
+from proteus.compressors.code import python_blocks
 from proteus.proxy.inject import RETRIEVE_TOOL_NAME, inject_retrieve_tool
 from proteus.router import should_compress
 
@@ -54,6 +55,9 @@ def _what_changed(cstats: dict) -> str:
         if dropped:
             return f"{dropped:,} of {cstats.get('original_rows', 0):,} rows not shown"
     elif compressor.startswith("code"):
+        if cstats.get("mode") == "skeleton":
+            return (f"comments removed and {cstats.get('bodies_hidden', 0):,} function bodies hidden, "
+                    f"signatures kept; query a function's name to get it whole")
         return "comments and docstrings removed, code unchanged"
     elif compressor == "log_deduper":
         if not cstats.get("errors_dropped"):
@@ -225,13 +229,28 @@ def _search(original: str, content_hash: str, query: str) -> str:
     if not hits:
         return f"No lines in {content_hash} match {query!r}; nothing else in the original matches either."
 
+    # In Python, a match inside a function brings the whole function: the
+    # skeleton hides bodies, and a model asking for "def connect" wants the
+    # body, not two lines either side of the signature.
+    blocks = python_blocks(original) if "def " in original else None
     shown: set[int] = set()
+    whole = 0
     for n in hits:
-        shown.update(range(max(0, n - RETRIEVE_CONTEXT_LINES), min(len(lines), n + RETRIEVE_CONTEXT_LINES + 1)))
+        block = _innermost(blocks, n + 1) if blocks else None
+        if block is not None and block[1] - block[0] < MAX_FUNCTION_LINES:
+            shown.update(range(block[0] - 1, block[1]))
+            whole += 1
+        else:
+            # Inside a function too long to send whole, more context than usual.
+            k = LONG_FUNCTION_CONTEXT_LINES if block is not None else RETRIEVE_CONTEXT_LINES
+            shown.update(range(max(0, n - k), min(len(lines), n + k + 1)))
     hit_set = set(hits)
+    context = ("each with its whole enclosing function" if whole == len(hits)
+               else "with surrounding lines"
+               + (", or the whole enclosing function" if whole else ""))
     out = [
         f"[All {len(hits)} lines of the full original {how} {query!r} (of {len(lines)} lines), "
-        f"with {RETRIEVE_CONTEXT_LINES} lines of context. Matches as line: text, context as line- text]"
+        f"{context}. Matches as line: text, the rest as line- text]"
     ]
     prev = None
     for n in sorted(shown):
@@ -242,6 +261,17 @@ def _search(original: str, content_hash: str, query: str) -> str:
     result = "\n".join(out)
     # The query matched most of it: the original is no longer and easier to read.
     return original if len(result) >= len(original) else result
+
+
+# A match inside a function longer than this gets wider context instead.
+MAX_FUNCTION_LINES = 150
+LONG_FUNCTION_CONTEXT_LINES = 8
+
+
+def _innermost(blocks: list[tuple[int, int]], line: int) -> tuple[int, int] | None:
+    """The smallest (first, last) block containing a 1-based line."""
+    inside = [b for b in blocks if b[0] <= line <= b[1]]
+    return min(inside, key=lambda b: b[1] - b[0]) if inside else None
 
 
 def _match(texts: list[str], query: str) -> tuple[list[int], str]:
