@@ -1,8 +1,20 @@
 # Proteus configuration
-# Overrides defaults in config.py. Hot-reloadable by the proxy.
+#
+#   proteus proxy --config config.yaml
+#   proteus file big.json --config config.yaml
+#
+# Every value here is the built-in default; delete what you don't change.
+# Unknown keys and wrongly typed values are errors, not silently ignored.
+# The proxy re-reads this file when it changes (the proxy: section needs a
+# restart). Library users: proteus.config.configure("config.yaml").
+
+# Start from a profile (conservative | balanced | aggressive); keys below
+# override it. `--profile` on the command line overrides this line.
+# profile: balanced
 
 # ── Routing ──
 min_compress_chars: 3000
+min_savings_pct: 25   # proxy sends the original when compression saves less
 
 # ── JSON Crusher ──
 json:
@@ -16,14 +28,12 @@ json:
 logs:
   min_repetitions: 3
   keep_first_last: true
-  max_errors: 30
   max_lines_total: 200
 
-# ── Code Compressor ──
+# ── Code ──
 code:
-  max_function_lines: 15
-  strip_comments: true
-  max_file_lines: 200
+  skeleton_min_chars: 20000     # Python this long: hide function bodies, keep signatures (0 = never)
+  skeleton_min_body_lines: 4    # shorter bodies stay visible
 
 # ── File Listing ──
 file_listing:

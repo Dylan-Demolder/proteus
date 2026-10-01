@@ -7,6 +7,8 @@ uncompressed originals when needed.
 import hashlib
 import json
 import os
+import re
+import tempfile
 import time
 from pathlib import Path
 
@@ -17,6 +19,17 @@ def _cache_dir() -> Path:
     path = Path(config.CCR_CACHE_DIR).expanduser()
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Hashes are hex digests. Anything else (e.g. "../../x" from a model's tool
+# call) must not be turned into a path.
+_VALID_HASH = re.compile(r"[0-9a-f]{1,64}")
+
+
+def _entry_path(content_hash: str) -> Path | None:
+    if not isinstance(content_hash, str) or not _VALID_HASH.fullmatch(content_hash):
+        return None
+    return _cache_dir() / f"{content_hash}.json"
 
 
 def _hash_content(content: str) -> str:
@@ -52,9 +65,19 @@ def store(original: str, compressed: str, content_type: str, stats: dict) -> str
         }
     }
 
-    cache_path = cache_dir / f"{content_hash}.json"
-    with open(cache_path, "w") as f:
-        json.dump(entry, f, ensure_ascii=False, indent=2)
+    # Write to a temp file and rename, so a concurrent retrieve() never reads
+    # a half-written entry (it would fail to parse and report a miss).
+    fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix=".tmp-", suffix=".part")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(entry, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, cache_dir / f"{content_hash}.json")
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
     _maybe_evict(cache_dir)
 
@@ -70,9 +93,8 @@ def retrieve(content_hash: str) -> str | None:
     Returns:
         Original content string, or None if not found
     """
-    cache_dir = _cache_dir()
-    cache_path = cache_dir / f"{content_hash}.json"
-    if not cache_path.exists():
+    cache_path = _entry_path(content_hash)
+    if cache_path is None or not cache_path.exists():
         return None
     try:
         with open(cache_path) as f:
@@ -84,9 +106,8 @@ def retrieve(content_hash: str) -> str | None:
 
 def retrieve_compressed(content_hash: str) -> str | None:
     """Retrieve the compressed version by hash (for inspection)."""
-    cache_dir = _cache_dir()
-    cache_path = cache_dir / f"{content_hash}.json"
-    if not cache_path.exists():
+    cache_path = _entry_path(content_hash)
+    if cache_path is None or not cache_path.exists():
         return None
     try:
         with open(cache_path) as f:
@@ -144,7 +165,19 @@ def stats() -> dict:
 
 
 def clear():
-    """Clear all cached content."""
+    """Clear all cached content.
+
+    Tolerant of concurrent callers: another process may unlink a file between
+    glob() and unlink(), which would otherwise raise FileNotFoundError and
+    surface as a non-zero exit from `proteus clear`.
+    """
     cache_dir = _cache_dir()
-    for f in cache_dir.glob("*.json"):
-        f.unlink()
+    removed = 0
+    for path in cache_dir.glob("*.json"):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            # Already removed by a concurrent clearer — that's the goal.
+            continue
+    return removed

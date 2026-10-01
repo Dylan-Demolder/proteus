@@ -9,6 +9,7 @@ from proteus import compress_tool_output
 from proteus.ccr import clear as ccr_clear
 from proteus.ccr import retrieve as ccr_retrieve
 from proteus.ccr import stats as ccr_stats
+from proteus.profiles import list_profiles
 from proteus.proxy.backends import list_backends
 
 BACKEND_CHOICES = list(list_backends().keys())
@@ -24,31 +25,70 @@ def cli():
     pass
 
 
+def _load_settings(config_path: str | None, profile: str | None) -> dict:
+    """Apply --config/--profile to the live settings; exit with a clear error if invalid."""
+    if not config_path and not profile:
+        return {}
+    from proteus import config
+
+    try:
+        return config.configure(config_path, profile)
+    except (OSError, ValueError) as e:
+        raise click.UsageError(str(e)) from None
+    except Exception as e:  # yaml.YAMLError and friends
+        raise click.UsageError(f"{config_path}: {e}") from None
+
+
+PROFILE_OPTION = click.option(
+    "--profile", default=None, type=click.Choice(list_profiles()),
+    help="Compression profile (overrides the config file's profile:)",
+)
+CONFIG_OPTION = click.option(
+    "--config", "config_path", default=None, type=click.Path(exists=True, dir_okay=False),
+    help="Path to config YAML file (see config.yaml)",
+)
+
+
 @cli.command()
-@click.option("--port", default=8787, help="Port to bind to")
-@click.option("--host", default="127.0.0.1", help="Host to bind to")
-@click.option("--backend", default="openrouter",
+@click.option("--port", default=None, type=int, help="Port to bind to (default: 8787)")
+@click.option("--host", default=None, help="Host to bind to (default: 127.0.0.1)")
+@click.option("--backend", default=None,
               type=click.Choice(BACKEND_CHOICES),
-              help="Upstream API backend")
+              help="Upstream API backend (default: openrouter)")
 @click.option("--upstream-url", default=None,
               help="Override upstream API URL (for generic backend)")
 @click.option("--api-key-env", default=None,
               help="Environment variable name for the API key (for generic backend)")
 @click.option("--auto-detect", is_flag=True,
               help="Auto-detect backend from available API keys")
-@click.option("--config", "config_path", default=None,
-              help="Path to config YAML file")
+@CONFIG_OPTION
+@PROFILE_OPTION
 @click.option("--log-file", default=None,
               help="Path to write request/response JSONL log")
-def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_path, log_file):
+def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_path, profile, log_file):
     """Start the Proteus compression proxy.
 
     Sits between your LLM client and API provider, compressing
     large tool outputs before they reach the LLM.
 
+    Command-line options override the config file's proxy: section. The
+    compression settings in the config file are reloaded when it changes.
+
     Available backends:
     \b
     """
+    file_proxy = _load_settings(config_path, profile)
+    host = host or file_proxy.get("host") or "127.0.0.1"
+    port = port or file_proxy.get("port") or 8787
+    backend = backend or file_proxy.get("backend") or "openrouter"
+    upstream_url = upstream_url or file_proxy.get("upstream_url")
+    api_key_env = api_key_env or file_proxy.get("api_key_env")
+    log_file = log_file or file_proxy.get("log_file")
+    if backend not in BACKEND_CHOICES:
+        raise click.UsageError(
+            f"{config_path}: unknown backend {backend!r} (choose from {', '.join(BACKEND_CHOICES)})"
+        )
+
     # Print backend descriptions
     descriptions = list_backends()
     for name, desc in descriptions.items():
@@ -74,6 +114,8 @@ def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_pa
     click.echo(f"🚀 Proteus proxy starting on {host}:{port}", err=True)
     click.echo(f"   Backend: {backend}", err=True)
     click.echo(f"   Config:  {config_path or 'defaults'}", err=True)
+    if profile:
+        click.echo(f"   Profile: {profile}", err=True)
 
     start_proxy(
         host=host,
@@ -82,6 +124,7 @@ def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_pa
         upstream_url=upstream_url,
         api_key_env=api_key_env,
         config_path=config_path,
+        profile=profile,
         log_file=log_file,
     )
 
@@ -89,8 +132,11 @@ def proxy(port, host, backend, upstream_url, api_key_env, auto_detect, config_pa
 @cli.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--no-ccr", is_flag=True, help="Skip CCR cache storage")
-def file(path, no_ccr):
+@CONFIG_OPTION
+@PROFILE_OPTION
+def file(path, no_ccr, config_path, profile):
     """Compress a single file and show compression stats."""
+    _load_settings(config_path, profile)
     content = Path(path).read_text()
     compressed, stats = compress_tool_output(content)
 

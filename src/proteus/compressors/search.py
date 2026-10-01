@@ -4,8 +4,12 @@ Strategy:
 1. Parse file:line:content format
 2. Group matches by file
 3. Score each match by content (errors > keywords > rest)
-4. Keep top N per file, always keep first and last
-5. Cap total matches
+4. Boost matches whose shape is rare: in a search, every hit contains the
+   search term, so what stands out is the odd one (`timeout = 4711` among
+   300 `timeout = get_setting(...)`)
+5. Keep top N per file, always keep first and last
+6. Cap total matches, and summarize the hidden ones by shape so the model
+   can see nothing unusual was left out
 """
 
 from __future__ import annotations
@@ -13,10 +17,18 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
+from .. import config
+
 # ── Search result patterns ──
-_SEARCH_LINE = re.compile(r"^([^:]+):(\d+):(.+)$")  # file:line:content
-_SEARCH_CONTEXT = re.compile(r"^([^:]+)-(\d+)-(.+)$")  # file-line-content (rg context)
-_SEARCH_BINARY = re.compile(r"^([^:]+):\s*(.+)$")  # file: content (binary / header)
+# The leading field must look like a file path: it contains a "/" or ends in
+# an extension. Without that, "key: value" lines (YAML, `kubectl describe`,
+# Markdown "Note: ..."), ISO timestamps ("2026-09-30T10:00:05" reads as
+# file "2026-09-30T10", line 00) and log dates ("2026-09-30-...") all parse
+# as grep hits, and the search compressor keeps only ~30 of them.
+FILE_PATH = r"(?:[^\s:]*/[^\s:]*|[^\s:/]*\.[A-Za-z]\w{0,7})"
+_SEARCH_LINE = re.compile(rf"^({FILE_PATH}):(\d+):(.*)$")  # file:line:content
+_SEARCH_CONTEXT = re.compile(rf"^({FILE_PATH})-(\d+)-(.*)$")  # file-line-content (rg context)
+_SEARCH_BINARY = re.compile(rf"^({FILE_PATH}):\s*(.+)$")  # file: content (no line number)
 _SEARCH_SEP = re.compile(r"^--$")  # ripgrep file separator
 
 # ── Importance keywords ──
@@ -42,23 +54,45 @@ def _score_match(content: str) -> float:
     return 2.0  # Default: slightly above lowest
 
 
+_QUOTED = re.compile(r"""(["'`]).*?\1""")
+_NUMBER = re.compile(r"\d+")
+_SPACE = re.compile(r"\s+")
+
+# A shape seen at most this many times counts as unusual.
+RARE_SHAPE_MAX = 2
+RARE_BOOST = 20.0
+
+
+def _shape(text: str) -> str:
+    """A match with its literals blanked, so near-identical hits group together."""
+    first = text.split("\n", 1)[0]
+    return _SPACE.sub(" ", _NUMBER.sub("N", _QUOTED.sub(r"\1…\1", first))).strip()
+
+
 def compress_search(
     content: str,
-    max_per_file: int = 5,
-    max_total: int = 30,
-    max_files: int = 15,
+    max_per_file: int | None = None,
+    max_total: int | None = None,
+    max_files: int | None = None,
 ) -> tuple[str, dict]:
     """Compress search/grep results.
 
     Args:
         content: Raw grep/ripgrep output.
-        max_per_file: Max matches to show per file.
-        max_total: Max total matches across all files.
-        max_files: Max files to show.
+        max_per_file: Max matches to show per file (default: config).
+        max_total: Max total matches across all files (default: config).
+        max_files: Max files to show (default: config).
 
     Returns:
         (compressed_text, stats_dict)
     """
+    if max_per_file is None:
+        max_per_file = config.SEARCH_MAX_PER_FILE
+    if max_total is None:
+        max_total = config.SEARCH_MAX_TOTAL
+    if max_files is None:
+        max_files = config.SEARCH_MAX_FILES
+
     stats = {
         "original_chars": len(content),
         "mode": "search",
@@ -108,18 +142,49 @@ def compress_search(
                 last[2],
             )
 
-    stats["original_files"] = len(file_matches)
+    original_files = len(file_matches)
+    stats["original_files"] = original_files
     stats["original_matches"] = sum(len(v) for v in file_matches.values())
 
+    if not stats["original_matches"]:
+        # Nothing parsed as a search hit (wrong content type, e.g. forced by a
+        # caller's hint). Selecting "top matches" from nothing would return an
+        # empty string, so hand the input back unchanged instead.
+        stats["compressed_chars"] = len(content)
+        stats["compressed_files"] = 0
+        stats["compressed_matches"] = 0
+        return content, stats
+
+    # Rare shapes are what a search result is usually looked at for.
+    shapes: dict[str, str] = {}  # each distinct match's shape, computed once
+
+    def shape_of(text: str) -> str:
+        if text not in shapes:
+            shapes[text] = _shape(text)
+        return shapes[text]
+
+    shape_counts: dict[str, int] = defaultdict(int)
+    for matches in file_matches.values():
+        for _, text, _ in matches:
+            shape_counts[shape_of(text)] += 1
+    for fname, matches in file_matches.items():
+        file_matches[fname] = [
+            (lnum, text, score + (RARE_BOOST if shape_counts[shape_of(text)] <= RARE_SHAPE_MAX else 0.0))
+            for lnum, text, score in matches
+        ]
+
     # Select files (by highest total score)
+    # A file holding an unusual match outranks files full of ordinary ones.
     file_scores = {
-        f: sum(s for _, _, s in matches) for f, matches in file_matches.items()
+        f: (max(s for _, _, s in matches), sum(s for _, _, s in matches)) for f, matches in file_matches.items()
     }
     top_files = sorted(file_scores, key=lambda f: file_scores[f], reverse=True)[:max_files]
 
     # Select matches per file
     result: list[str] = []
     total_selected = 0
+    shown: set[tuple[str, int, str]] = set()
+    files_shown = 0
 
     for fname in top_files:
         matches = file_matches[fname]
@@ -150,18 +215,39 @@ def compress_search(
         result.append(f"# {fname} ({len(selected)}/{total_in_file} matches)")
         for lnum, text, _ in selected:
             result.append(f"  {lnum}:{text}")
+            shown.add((fname, lnum, text))
 
+        files_shown += 1
         total_selected += len(selected)
         if total_selected >= max_total:
-            remaining_files = len(top_files) - (top_files.index(fname) + 1)
-            if remaining_files > 0:
-                result.append(f"... {remaining_files} more files with matches ...")
             break
+
+    hidden = [
+        (fname, lnum, text)
+        for fname, matches in file_matches.items()
+        for lnum, text, _ in matches
+        if (fname, lnum, text) not in shown
+    ]
+    rare_hidden = sum(shape_counts[shape_of(text)] <= RARE_SHAPE_MAX for _, _, text in hidden)
+    if hidden:
+        remaining_files = original_files - files_shown
+        where = f", {remaining_files} more files with matches" if remaining_files > 0 else ""
+        result.append(f"... {len(hidden)} more matches not shown{where} ...")
+        hidden_shapes: dict[str, int] = defaultdict(int)
+        for _, _, text in hidden:
+            hidden_shapes[shape_of(text)] += 1
+        common = sorted(hidden_shapes.items(), key=lambda kv: -kv[1])[:3]
+        listed = sum(n for _, n in common)
+        summary = "; ".join(f"{n}× `{shape[:100]}`" for shape, n in common)
+        if listed < len(hidden):
+            summary += f"; {len(hidden) - listed} others"
+        result.append(f"[not shown, by shape (numbers as N, strings as '…'): {summary}]")
 
     compressed = "\n".join(result)
 
     stats["compressed_chars"] = len(compressed)
-    stats["compressed_files"] = len(top_files)
+    stats["compressed_files"] = files_shown
     stats["compressed_matches"] = total_selected
+    stats["rare_hidden"] = rare_hidden
 
     return compressed, stats

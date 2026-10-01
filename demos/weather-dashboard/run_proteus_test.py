@@ -8,8 +8,9 @@ Proteus Weather Dashboard Demo
 4. Fetches a LIVE API response and compresses it in-flight
 5. Reports compression ratios and LLM cost savings
 
-This simulates an LLM seeing the project's build artifacts and API responses
-through Proteus compression — producing identical analysis at 68% less cost.
+This simulates an LLM seeing the project's source files and API responses
+through Proteus. Without network access the live fetch falls back to the
+bundled API response.
 """
 
 import sys
@@ -61,7 +62,8 @@ def check_match(raw, retrieved, label):
 
 
 def main():
-    src_dir = "/tmp/weather-app/src"
+    # The app's files live next to this script.
+    src_dir = os.path.dirname(os.path.abspath(__file__))
     all_ok = True
 
     print("=" * 70)
